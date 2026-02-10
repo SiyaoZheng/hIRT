@@ -126,6 +126,9 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   fitted_mean <- as.double(x %*% gamma)
   fitted_var <- rep(1, N)
 
+  # Pre-compute sparse representation for C++ E-step
+  sparse_y <- build_sparse_y(y)
+
   # EM algorithm
   for (iter in seq(1, con[["max_iter"]])) {
 
@@ -135,24 +138,23 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
       gamma_prev <- gamma
       lambda_prev <- lambda
 
-      # construct w_ik
-      posterior <- Map(theta_post_ltm, theta_ls, qw_ls)
-      w <- {
-          tmp <- matrix(unlist(posterior), N, K)
-          t(sweep(tmp, 1, rowSums(tmp), FUN = "/"))
-      }
+      # E-step: sparse C++ (computes w, theta_eap, theta_vap)
+      estep <- compute_estep_ltm_cpp(
+          sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+          alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var
+      )
+      w <- estep$w
 
-      # maximization
-      pseudo_tab <- lapply(y, dummy_fun_ltm)
-      pseudo_y <- lapply(pseudo_tab, tab2df_ltm, theta_ls = theta_ls)
-      pseudo_logit <- lapply(pseudo_y, function(df) glm.fit(cbind(1, df[["x"]]),
-          df[["y"]], weights = df[["wt"]], family = quasibinomial("logit"))[["coefficients"]])
-      beta <- vapply(pseudo_logit, function(x) x[2L], double(1L))
-      alpha <- vapply(pseudo_logit, function(x) x[1L], double(1L))
+      # maximization: sparse C++ (sufficient stats + Newton-Raphson)
+      mstep <- compute_mstep_ltm_cpp(
+          sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+          w, theta_ls, alpha, beta)
+      alpha <- setNames(mstep$alpha, names(y))
+      beta <- setNames(mstep$beta, names(y))
 
-      # EAP and VAP estimates of latent preferences
-      theta_eap <- t(theta_ls %*% w)
-      theta_vap <- t(theta_ls^2 %*% w) - theta_eap^2
+      # EAP and VAP estimates from E-step
+      theta_eap <- estep$theta_eap
+      theta_vap <- estep$theta_vap
 
       # variance regression
       gamma <- lm_opr %*% theta_eap
@@ -223,11 +225,18 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   log_Lik <- sum(log(Li))
 
   # outer product of gradients
-  environment(dalpha_ltm) <- environment(sj_ab_ltm) <- environment(si_gamma) <- environment(si_lambda) <- environment()
+  environment(dalpha_ltm) <- environment(sj_ab_ltm) <- environment()
   dalpha <- dalpha_ltm(alpha, beta)  # K*J matrix
   s_ab <- unname(Reduce(cbind, lapply(1:J, sj_ab_ltm)))
-  s_gamma <- vapply(1:N, si_gamma, double(p))
-  s_lambda <- vapply(1:N, si_lambda, double(q))
+
+  # Vectorized gradient computation (replaces per-observation vapply loops)
+  theta_dev <- matrix(theta_ls, N, K, byrow = TRUE) - fitted_mean  # N x K
+  s_gamma_scalar <- rowSums(pik * Lik * theta_dev) / fitted_var / Li
+  s_gamma <- t(x[, 1:p, drop = FALSE] * s_gamma_scalar)  # p x N
+
+  inner <- 0.5 * (theta_dev^2 / fitted_var - 1)  # N x K
+  s_lambda_scalar <- rowSums(pik * Lik * inner) / Li
+  s_lambda <- t(z[, 1:q, drop = FALSE] * s_lambda_scalar)  # q x N
 
   s_all <- rbind(t(s_ab)[-c(1L, ncol(s_ab)), , drop = FALSE], s_gamma, s_lambda)
   s_all[is.na(s_all)] <- 0

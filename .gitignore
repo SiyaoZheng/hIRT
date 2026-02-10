@@ -9,3 +9,7 @@ cran-comments
 inst/doc
 hIRT.Rproj
 .Rproj.user
+.DS_Store
+src/*.o
+src/*.so
+src/*.dll

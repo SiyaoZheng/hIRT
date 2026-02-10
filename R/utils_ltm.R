@@ -1,6 +1,22 @@
 # check if a vector is dichotomous
 invalid_ltm <- function(x) max(x, na.rm = TRUE) != 1
 
+# Build CSR (Compressed Sparse Row) representation of response matrix.
+# Only observed (non-NA) entries are stored.
+# Returns list(row_ptr, col_idx, values) with 0-based column indices.
+build_sparse_y <- function(y) {
+    y_mat <- as.matrix(y)
+    N <- nrow(y_mat)
+    obs <- which(!is.na(y_mat), arr.ind = TRUE)
+    obs <- obs[order(obs[, 1L], obs[, 2L]), , drop = FALSE]
+    row_counts <- tabulate(obs[, 1L], nbins = N)
+    list(
+        row_ptr = c(0L, cumsum(row_counts)),
+        col_idx = obs[, 2L] - 1L,
+        values  = as.integer(y_mat[obs])
+    )
+}
+
 glm_fit <- function(x, y, weights, tol = 1e-16, ...){
     glm.fit(x[weights>tol, , drop = FALSE], y[weights>tol], weights = weights[weights>tol], ...)
 }
