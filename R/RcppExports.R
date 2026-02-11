@@ -5,7 +5,7 @@ compute_estep_ltm_cpp <- function(row_ptr, col_idx, values, alpha, beta, theta_l
     .Call(`_hIRT_compute_estep_ltm_cpp`, row_ptr, col_idx, values, alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var)
 }
 
-compute_mstep_ltm_cpp <- function(row_ptr, col_idx, values, w, theta_ls, alpha_init, beta_init, max_nr_iter = 25L, nr_tol = 1e-8) {
-    .Call(`_hIRT_compute_mstep_ltm_cpp`, row_ptr, col_idx, values, w, theta_ls, alpha_init, beta_init, max_nr_iter, nr_tol)
+compute_mstep_ltm_cpp <- function(row_ptr, col_idx, values, w, theta_ls, alpha_init, beta_init, max_nr_iter = 25L, nr_tol = 1e-8, mu_prior = 0.0, sigma_prior = 1.5) {
+    .Call(`_hIRT_compute_mstep_ltm_cpp`, row_ptr, col_idx, values, w, theta_ls, alpha_init, beta_init, max_nr_iter, nr_tol, mu_prior, sigma_prior)
 }
 

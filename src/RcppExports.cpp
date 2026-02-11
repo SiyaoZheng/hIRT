@@ -30,8 +30,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // compute_mstep_ltm_cpp
-List compute_mstep_ltm_cpp(IntegerVector row_ptr, IntegerVector col_idx, IntegerVector values, NumericMatrix w, NumericVector theta_ls, NumericVector alpha_init, NumericVector beta_init, int max_nr_iter, double nr_tol);
-RcppExport SEXP _hIRT_compute_mstep_ltm_cpp(SEXP row_ptrSEXP, SEXP col_idxSEXP, SEXP valuesSEXP, SEXP wSEXP, SEXP theta_lsSEXP, SEXP alpha_initSEXP, SEXP beta_initSEXP, SEXP max_nr_iterSEXP, SEXP nr_tolSEXP) {
+List compute_mstep_ltm_cpp(IntegerVector row_ptr, IntegerVector col_idx, IntegerVector values, NumericMatrix w, NumericVector theta_ls, NumericVector alpha_init, NumericVector beta_init, int max_nr_iter, double nr_tol, double mu_prior, double sigma_prior);
+RcppExport SEXP _hIRT_compute_mstep_ltm_cpp(SEXP row_ptrSEXP, SEXP col_idxSEXP, SEXP valuesSEXP, SEXP wSEXP, SEXP theta_lsSEXP, SEXP alpha_initSEXP, SEXP beta_initSEXP, SEXP max_nr_iterSEXP, SEXP nr_tolSEXP, SEXP mu_priorSEXP, SEXP sigma_priorSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -44,14 +44,16 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< NumericVector >::type beta_init(beta_initSEXP);
     Rcpp::traits::input_parameter< int >::type max_nr_iter(max_nr_iterSEXP);
     Rcpp::traits::input_parameter< double >::type nr_tol(nr_tolSEXP);
-    rcpp_result_gen = Rcpp::wrap(compute_mstep_ltm_cpp(row_ptr, col_idx, values, w, theta_ls, alpha_init, beta_init, max_nr_iter, nr_tol));
+    Rcpp::traits::input_parameter< double >::type mu_prior(mu_priorSEXP);
+    Rcpp::traits::input_parameter< double >::type sigma_prior(sigma_priorSEXP);
+    rcpp_result_gen = Rcpp::wrap(compute_mstep_ltm_cpp(row_ptr, col_idx, values, w, theta_ls, alpha_init, beta_init, max_nr_iter, nr_tol, mu_prior, sigma_prior));
     return rcpp_result_gen;
 END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
     {"_hIRT_compute_estep_ltm_cpp", (DL_FUNC) &_hIRT_compute_estep_ltm_cpp, 9},
-    {"_hIRT_compute_mstep_ltm_cpp", (DL_FUNC) &_hIRT_compute_mstep_ltm_cpp, 9},
+    {"_hIRT_compute_mstep_ltm_cpp", (DL_FUNC) &_hIRT_compute_mstep_ltm_cpp, 11},
     {NULL, NULL, 0}
 };
 

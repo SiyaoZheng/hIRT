@@ -84,7 +84,8 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   init <- match.arg(init)
 
   # control parameters
-  con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 25, C = 4)
+  con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 25, C = 4,
+              prior_mu_beta = 0, prior_sigma_beta = 1.5)
   con[names(control)] <- control
 
   # set environments for utility functions
@@ -132,13 +133,11 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   # EM algorithm
   for (iter in seq(1, con[["max_iter"]])) {
 
-      # store previous parameters
+      # store previous parameters for convergence check
       alpha_prev <- alpha
       beta_prev <- beta
-      gamma_prev <- gamma
-      lambda_prev <- lambda
 
-      # E-step: sparse C++ (computes w, theta_eap, theta_vap)
+      # E-step: sparse C++ (computes w, theta_eap, theta_vap, log_lik)
       estep <- compute_estep_ltm_cpp(
           sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
           alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var
@@ -148,7 +147,9 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
       # maximization: sparse C++ (sufficient stats + Newton-Raphson)
       mstep <- compute_mstep_ltm_cpp(
           sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
-          w, theta_ls, alpha, beta)
+          w, theta_ls, alpha, beta,
+          mu_prior = con[["prior_mu_beta"]],
+          sigma_prior = con[["prior_sigma_beta"]])
       alpha <- setNames(mstep$alpha, names(y))
       beta <- setNames(mstep$beta, names(y))
 
@@ -201,14 +202,14 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
 
       cat(".")
 
-      # check convergence
+      # check convergence (RMSE of beta changes, matching original criterion)
       if (sqrt(mean((beta - beta_prev)^2)) < con[["eps"]]) {
           cat("\n converged at iteration", iter, "\n")
           break
       } else if (iter == con[["max_iter"]]) {
           stop("algorithm did not converge; try increasing max_iter.")
           break
-      } else next
+      }
   }
 
   gamma <- setNames(as.double(gamma), paste("x", colnames(x), sep = ""))

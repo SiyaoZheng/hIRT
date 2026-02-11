@@ -65,6 +65,7 @@ List compute_estep_ltm_cpp(
     NumericMatrix w(K, N);
     NumericVector theta_eap(N);
     NumericVector theta_vap(N);
+    double total_log_lik = 0.0;
 
     // Temporary storage for log-posteriors (one per quadrature point)
     std::vector<double> log_post(K);
@@ -114,6 +115,7 @@ List compute_estep_ltm_cpp(
             sum_exp += std::exp(log_post[k] - max_lp);
         }
         const double log_norm = max_lp + std::log(sum_exp);
+        total_log_lik += log_norm;
 
         // Posterior weights, EAP, VAP
         double eap  = 0.0;
@@ -131,7 +133,8 @@ List compute_estep_ltm_cpp(
     return List::create(
         Named("w")         = w,
         Named("theta_eap") = theta_eap,
-        Named("theta_vap") = theta_vap
+        Named("theta_vap") = theta_vap,
+        Named("log_lik")   = total_log_lik
     );
 }
 
@@ -167,7 +170,9 @@ List compute_mstep_ltm_cpp(
     NumericVector alpha_init,
     NumericVector beta_init,
     int max_nr_iter = 25,
-    double nr_tol = 1e-8
+    double nr_tol = 1e-8,
+    double mu_prior = 0.0,
+    double sigma_prior = 1.5
 ) {
     const int N = w.ncol();
     const int K = w.nrow();
@@ -245,13 +250,35 @@ List compute_mstep_ltm_cpp(
                 h_bb -= w_k * tls[k] * tls[k];
             }
 
+            // Lognormal(mu_prior, sigma_prior^2) prior on |b|
+            if (sigma_prior < 1e30) {
+                const double abs_b = std::abs(b);
+                if (abs_b > 1e-10) {
+                    const double log_abs_b = std::log(abs_b);
+                    const double sig2 = sigma_prior * sigma_prior;
+                    g_b += -(1.0 + (log_abs_b - mu_prior) / sig2) / b;
+                    // Use true Hessian in concave region; in convex region
+                    // (extreme |b|), substitute the mode curvature -1/(sig2*b^2)
+                    // to keep the total Hessian negative-definite.
+                    const double h_prior = (sig2 - 1.0 + log_abs_b - mu_prior) / (sig2 * b * b);
+                    const double h_safe  = -1.0 / (sig2 * b * b);
+                    h_bb += std::min(h_prior, h_safe);
+                }
+            }
+
             // 2×2 Hessian inverse: [[h_aa, h_ab], [h_ab, h_bb]]
             const double det = h_aa * h_bb - h_ab * h_ab;
             if (std::abs(det) < 1e-30) break;  // singular Hessian
 
             const double inv_det = 1.0 / det;
-            const double da = inv_det * (h_bb * g_a - h_ab * g_b);
-            const double db = inv_det * (h_aa * g_b - h_ab * g_a);
+            double da = inv_det * (h_bb * g_a - h_ab * g_b);
+            double db = inv_det * (h_aa * g_b - h_ab * g_a);
+
+            // Cap NR step to prevent overshooting at extreme starting values
+            // (standard safeguard in IRT M-step, cf. mirt)
+            const double max_step = 1.0;
+            if (std::abs(da) > max_step) da = std::copysign(max_step, da);
+            if (std::abs(db) > max_step) db = std::copysign(max_step, db);
 
             a -= da;
             b -= db;
