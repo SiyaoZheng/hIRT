@@ -23,7 +23,12 @@
 #'  \item{p}{The number of predictors for the mean equation.}
 #'  \item{q}{The number of predictors for the variance equation.}
 #'  \item{control}{List of control values.}
+#'  \item{se_computed}{Logical, whether standard errors were computed.}
+#'  \item{timing}{Named list of timing diagnostics when \code{control$profile = TRUE}.}
 #'  \item{call}{The matched call.}
+#' @param compute_se Logical. If \code{TRUE} (default), compute standard
+#'   errors from the observed information matrix. If \code{FALSE}, skip this
+#'   step and return \code{NA} for standard-error related outputs.
 #' @references Zhou, Xiang. 2019. "\href{https://doi.org/10.1017/pan.2018.63}{Hierarchical Item Response Models for Analyzing Public Opinion.}" Political Analysis.
 #' @importFrom rms lrm.fit
 #' @importFrom pryr compose
@@ -42,7 +47,7 @@
 
 hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
                  beta_set = 1L, sign_set = TRUE, init = c("naive", "glm", "irt"),
-                 control = list()) {
+                 control = list(), compute_se = TRUE) {
 
   # match call
   cl <- match.call()
@@ -78,6 +83,8 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
 
   # check beta_set and sign_set
   stopifnot(beta_set %in% 1:J, is.logical(sign_set))
+  if (!is.logical(compute_se) || length(compute_se) != 1L || is.na(compute_se))
+    stop("`compute_se` must be TRUE or FALSE.")
 
   # check constraint
   constr <- match.arg(constr)
@@ -85,8 +92,22 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
 
   # control parameters
   con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 25, C = 4,
-              prior_mu_beta = 0, prior_sigma_beta = 1.5)
+              prior_mu_beta = 0, prior_sigma_beta = 1.5, profile = FALSE)
   con[names(control)] <- control
+
+  profile <- isTRUE(con[["profile"]])
+  timing <- NULL
+  if (profile) {
+    t_total_start <- proc.time()[["elapsed"]]
+    t_init_start <- t_total_start
+    timing <- list(
+      init = 0,
+      em_total = 0,
+      em = list(estep = 0, mstep = 0, varreg = 0, constr = 0),
+      inference = list(loglik = 0, gradients = 0, information = 0, reparam = 0),
+      total = 0
+    )
+  }
 
   # set environments for utility functions
   environment(loglik_ltm) <- environment(theta_post_ltm) <- environment(dummy_fun_ltm) <- environment(tab2df_ltm) <- environment()
@@ -129,6 +150,10 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
 
   # Pre-compute sparse representation for C++ E-step
   sparse_y <- build_sparse_y(y)
+  if (profile) {
+    timing$init <- proc.time()[["elapsed"]] - t_init_start
+    t_em_start <- proc.time()[["elapsed"]]
+  }
 
   # EM algorithm
   for (iter in seq(1, con[["max_iter"]])) {
@@ -138,18 +163,22 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
       beta_prev <- beta
 
       # E-step: sparse C++ (computes w, theta_eap, theta_vap, log_lik)
+      if (profile) t_phase <- proc.time()[["elapsed"]]
       estep <- compute_estep_ltm_cpp(
           sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
           alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var
       )
+      if (profile) timing$em$estep <- timing$em$estep + (proc.time()[["elapsed"]] - t_phase)
       w <- estep$w
 
       # maximization: sparse C++ (sufficient stats + Newton-Raphson)
+      if (profile) t_phase <- proc.time()[["elapsed"]]
       mstep <- compute_mstep_ltm_cpp(
           sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
           w, theta_ls, alpha, beta,
           mu_prior = con[["prior_mu_beta"]],
           sigma_prior = con[["prior_sigma_beta"]])
+      if (profile) timing$em$mstep <- timing$em$mstep + (proc.time()[["elapsed"]] - t_phase)
       alpha <- setNames(mstep$alpha, names(y))
       beta <- setNames(mstep$beta, names(y))
 
@@ -158,6 +187,7 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
       theta_vap <- estep$theta_vap
 
       # variance regression
+      if (profile) t_phase <- proc.time()[["elapsed"]]
       gamma <- lm_opr %*% theta_eap
       r2 <- (theta_eap - x %*% gamma)^2 + theta_vap
 
@@ -180,8 +210,10 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
         }
         lambda <- var_reg[["coefficients"]]
       }
+      if (profile) timing$em$varreg <- timing$em$varreg + (proc.time()[["elapsed"]] - t_phase)
 
       # location constraint
+      if (profile) t_phase <- proc.time()[["elapsed"]]
       tmp <- mean(x %*% gamma)
       alpha <- unlist(Map(function(x, y) x + tmp * y, alpha, beta))
       gamma[1L] <- gamma[1L] - tmp
@@ -199,6 +231,7 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
       }
       fitted_mean <- as.double(x %*% gamma)
       fitted_var <- exp(as.double(z %*% lambda))
+      if (profile) timing$em$constr <- timing$em$constr + (proc.time()[["elapsed"]] - t_phase)
 
       cat(".")
 
@@ -211,11 +244,13 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
           break
       }
   }
+  if (profile) timing$em_total <- proc.time()[["elapsed"]] - t_em_start
 
   gamma <- setNames(as.double(gamma), paste("x", colnames(x), sep = ""))
   lambda <- setNames(as.double(lambda), paste("z", colnames(z), sep = ""))
 
   # inference
+  if (profile) t_infer <- proc.time()[["elapsed"]]
   pik <- matrix(unlist(Map(partial(dnorm, x = theta_ls), mean = fitted_mean, sd = sqrt(fitted_var))),
                 N, K, byrow = TRUE) * matrix(qw_ls, N, K, byrow = TRUE)
   Lijk <- lapply(theta_ls, function(theta_k) exp(loglik_ltm(alpha = alpha, beta = beta, rep(theta_k, N))))  # K-list
@@ -224,38 +259,54 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
 
   # log likelihood
   log_Lik <- sum(log(Li))
+  if (profile) timing$inference$loglik <- proc.time()[["elapsed"]] - t_infer
 
-  # outer product of gradients
-  environment(dalpha_ltm) <- environment(sj_ab_ltm) <- environment()
-  dalpha <- dalpha_ltm(alpha, beta)  # K*J matrix
-  s_ab <- unname(Reduce(cbind, lapply(1:J, sj_ab_ltm)))
-
-  # Vectorized gradient computation (replaces per-observation vapply loops)
-  theta_dev <- matrix(theta_ls, N, K, byrow = TRUE) - fitted_mean  # N x K
-  s_gamma_scalar <- rowSums(pik * Lik * theta_dev) / fitted_var / Li
-  s_gamma <- t(x[, 1:p, drop = FALSE] * s_gamma_scalar)  # p x N
-
-  inner <- 0.5 * (theta_dev^2 / fitted_var - 1)  # N x K
-  s_lambda_scalar <- rowSums(pik * Lik * inner) / Li
-  s_lambda <- t(z[, 1:q, drop = FALSE] * s_lambda_scalar)  # q x N
-
-  s_all <- rbind(t(s_ab)[-c(1L, ncol(s_ab)), , drop = FALSE], s_gamma, s_lambda)
-  s_all[is.na(s_all)] <- 0
-  covmat <- tryCatch(solve(tcrossprod(s_all)),
-                     error = function(e) {warning("The information matrix is singular; SE calculation failed.");
-                       matrix(NA, nrow(s_all), nrow(s_all))})
-  se_all <- sqrt(diag(covmat))
-
-  # reorganize se_all
-  sH <- 2 * J
-  gamma_indices <- (sH - 1):(sH + p - 2)
-  lambda_indices <- (sH + p - 1):(sH + p + q - 2)
-  se_all <- c(NA, se_all[1:(sH-2)], NA, se_all[gamma_indices], se_all[lambda_indices])
-
-  # name se_all and covmat
   names_ab <- paste(rep(names(alpha), each = 2), c("Diff", "Dscrmn"))
-  names(se_all) <- c(names_ab, names(gamma), names(lambda))
-  rownames(covmat) <- colnames(covmat) <- c(names_ab[-c(1L, length(names_ab))], names(gamma), names(lambda))
+  coef_names <- c(names_ab, names(gamma), names(lambda))
+  free_coef_names <- c(names_ab[-c(1L, length(names_ab))], names(gamma), names(lambda))
+
+  if (compute_se) {
+    # outer product of gradients
+    if (profile) t_grad <- proc.time()[["elapsed"]]
+    environment(dalpha_ltm) <- environment(sj_ab_ltm) <- environment()
+    dalpha <- dalpha_ltm(alpha, beta)  # K*J matrix
+    s_ab <- unname(Reduce(cbind, lapply(1:J, sj_ab_ltm)))
+
+    # Vectorized gradient computation (replaces per-observation vapply loops)
+    theta_dev <- matrix(theta_ls, N, K, byrow = TRUE) - fitted_mean  # N x K
+    s_gamma_scalar <- rowSums(pik * Lik * theta_dev) / fitted_var / Li
+    s_gamma <- t(x[, 1:p, drop = FALSE] * s_gamma_scalar)  # p x N
+
+    inner <- 0.5 * (theta_dev^2 / fitted_var - 1)  # N x K
+    s_lambda_scalar <- rowSums(pik * Lik * inner) / Li
+    s_lambda <- t(z[, 1:q, drop = FALSE] * s_lambda_scalar)  # q x N
+
+    s_all <- rbind(t(s_ab)[-c(1L, ncol(s_ab)), , drop = FALSE], s_gamma, s_lambda)
+    s_all[is.na(s_all)] <- 0
+    if (profile) timing$inference$gradients <- proc.time()[["elapsed"]] - t_grad
+
+    if (profile) t_info <- proc.time()[["elapsed"]]
+    covmat <- tryCatch(solve(tcrossprod(s_all)),
+                       error = function(e) {
+                         warning("The information matrix is singular; SE calculation failed.")
+                         matrix(NA, nrow(s_all), nrow(s_all))
+                       })
+    if (profile) timing$inference$information <- proc.time()[["elapsed"]] - t_info
+    se_free <- sqrt(diag(covmat))
+
+    # reorganize se_all
+    sH <- 2 * J
+    gamma_indices <- (sH - 1):(sH + p - 2)
+    lambda_indices <- (sH + p - 1):(sH + p + q - 2)
+    se_all <- c(NA, se_free[1:(sH - 2)], NA, se_free[gamma_indices], se_free[lambda_indices])
+    names(se_all) <- coef_names
+    rownames(covmat) <- colnames(covmat) <- free_coef_names
+  } else {
+    covmat <- matrix(NA_real_, length(free_coef_names), length(free_coef_names))
+    rownames(covmat) <- colnames(covmat) <- free_coef_names
+    se_all <- rep(NA_real_, length(coef_names))
+    names(se_all) <- coef_names
+  }
 
   # item coefficients
   coefs_item <- Map(function(a, b) c(Diff = a, Dscrmn = b), alpha, beta)
@@ -268,6 +319,7 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
 
   # item constraints
   if (constr == "items"){
+    if (profile) t_reparam <- proc.time()[["elapsed"]]
 
     gamma0_prev <- gamma[1L]
 
@@ -292,32 +344,39 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
     theta_eap <- (theta_eap - gamma0_prev) * exp(c2/2) + gamma[1L]
     theta_vap <- theta_vap * (exp(c2/2))^2
 
-    # covmat for new parameterization
-    tmp_fun <- function(d) {
-      mat <- diag(d)
-      mat[d, d] <- exp(-c2/2)
-      mat[1:(d-1), d] <- rep(-c1, d-1)
-      mat
-    }
-    A <- Reduce(Matrix::bdiag, lapply(H, tmp_fun))
-    A2 <- A[seq(2, nrow(A)-1), seq(2, ncol(A)-1)]
-    B <- Matrix::bdiag(exp(c2/2) * diag(p), diag(q))
-    C <- Matrix::bdiag(A2, B)
-    covmat <- C %*% Matrix::tcrossprod(covmat, C)
-
-    se_all <- sqrt(Matrix::diag(covmat))
-
-    # reorganize se_all
-    sH <- 2 * J
-    lambda_indices <- gamma_indices <- NULL
-    gamma_indices <- (sH - 1):(sH + p - 2)
-    lambda_indices <- (sH + p - 1):(sH + p + q - 2)
-    se_all <- c(NA, se_all[1:(sH-2)], NA, se_all[gamma_indices], se_all[lambda_indices])
-
-    # name se_all and covmat
     names_ab <- paste(rep(names(alpha), each = 2), c("Diff", "Dscrmn"))
-    names(se_all) <- c(names_ab, names(gamma), names(lambda))
-    rownames(covmat) <- colnames(covmat) <- c(names_ab[-c(1L, length(names_ab))], names(gamma), names(lambda))
+    coef_names <- c(names_ab, names(gamma), names(lambda))
+    free_coef_names <- c(names_ab[-c(1L, length(names_ab))], names(gamma), names(lambda))
+
+    if (compute_se) {
+      # covmat for new parameterization
+      tmp_fun <- function(d) {
+        mat <- diag(d)
+        mat[d, d] <- exp(-c2/2)
+        mat[1:(d-1), d] <- rep(-c1, d-1)
+        mat
+      }
+      A <- Reduce(Matrix::bdiag, lapply(H, tmp_fun))
+      A2 <- A[seq(2, nrow(A)-1), seq(2, ncol(A)-1)]
+      B <- Matrix::bdiag(exp(c2/2) * diag(p), diag(q))
+      C <- Matrix::bdiag(A2, B)
+      covmat <- C %*% Matrix::tcrossprod(covmat, C)
+
+      se_free <- sqrt(Matrix::diag(covmat))
+
+      # reorganize se_all
+      sH <- 2 * J
+      gamma_indices <- (sH - 1):(sH + p - 2)
+      lambda_indices <- (sH + p - 1):(sH + p + q - 2)
+      se_all <- c(NA, se_free[1:(sH - 2)], NA, se_free[gamma_indices], se_free[lambda_indices])
+      names(se_all) <- coef_names
+      rownames(covmat) <- colnames(covmat) <- free_coef_names
+    } else {
+      covmat <- matrix(NA_real_, length(free_coef_names), length(free_coef_names))
+      rownames(covmat) <- colnames(covmat) <- free_coef_names
+      se_all <- rep(NA_real_, length(coef_names))
+      names(se_all) <- coef_names
+    }
 
     # item coefficients
     coefs_item <- Map(function(a, b) c(Diff = a, Dscrmn = b), alpha, beta)
@@ -327,16 +386,21 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
     coefs <- data.frame(Estimate = coef_all, Std_Error = se_all, z_value = coef_all/se_all,
                         p_value = 2 * (1 - pnorm(abs(coef_all/se_all))))
     rownames(coefs) <- names(se_all)
+    if (profile) timing$inference$reparam <- proc.time()[["elapsed"]] - t_reparam
   }
 
   # ability parameter estimates
   theta <- data.frame(post_mean = theta_eap, post_sd = sqrt(theta_vap),
                       prior_mean = fitted_mean, prior_sd = sqrt(fitted_var))
 
+  if (profile) {
+    timing$total <- proc.time()[["elapsed"]] - t_total_start
+  }
+
   # output
   out <- list(coefficients = coefs, scores = theta, vcov = covmat, log_Lik = log_Lik, constr = constr,
-              N = N, J = J, H = H, ylevels = ylevels, p = p, q = q, control = con, call = cl)
+              N = N, J = J, H = H, ylevels = ylevels, p = p, q = q,
+              control = con, se_computed = compute_se, timing = timing, call = cl)
   class(out) <- c("hltm", "hIRT")
   out
 }
-

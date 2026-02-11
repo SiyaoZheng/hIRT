@@ -12,7 +12,8 @@ hltm(
   beta_set = 1L,
   sign_set = TRUE,
   init = c("naive", "glm", "irt"),
-  control = list()
+  control = list(),
+  compute_se = TRUE
 )
 }
 \arguments{
@@ -58,9 +59,19 @@ the corresponding item (indexed by \code{beta_set}) be positive
    \eqn{\lambda}. Specifically, iterations continue until the Euclidean
   distance between two consecutive log likelihoods falls under \code{eps2}.
   \code{eps2}=1e-3 by default.}
- \item{K}{Number of Gauss-Legendre quadrature points for the E-step. The default is 21.}
- \item{C}{[-C, C] sets the range of integral in the E-step. \code{C}=3 by default.}
+ \item{K}{Number of Gauss-Legendre quadrature points for the E-step. The default is 25.}
+ \item{C}{[-C, C] sets the range of integral in the E-step. \code{C}=4 by default.}
+ \item{prior_mu_beta}{Mean parameter for the lognormal prior on \eqn{|\beta|}.
+   The default is 0.}
+ \item{prior_sigma_beta}{Standard deviation parameter for the lognormal prior on
+   \eqn{|\beta|}. The default is 1.5; set to \code{Inf} for MLE.}
+ \item{profile}{Logical. If \code{TRUE}, return staged timing diagnostics in the
+   \code{timing} slot of the fitted object. The default is \code{FALSE}.}
 }}
+
+\item{compute_se}{Logical. If \code{TRUE} (default), compute standard
+errors from the observed information matrix. If \code{FALSE}, skip this
+step and return \code{NA} for standard-error related outputs.}
 }
 \value{
 An object of class \code{hltm}.
@@ -77,6 +88,8 @@ An object of class \code{hltm}.
  \item{p}{The number of predictors for the mean equation.}
  \item{q}{The number of predictors for the variance equation.}
  \item{control}{List of control values.}
+ \item{se_computed}{Logical, whether standard errors were computed.}
+ \item{timing}{Named list of timing diagnostics when \code{control$profile = TRUE}.}
  \item{call}{The matched call.}
 }
 \description{

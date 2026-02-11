@@ -71,6 +71,52 @@ test_that("hltm handles missing data correctly", {
   expect_true(all(is.finite(m$scores$post_mean)))
 })
 
+test_that("hltm can skip standard error computation", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[1:600, -(1:3)]
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+  x <- model.matrix(~ party * educ, nes_econ2008)[1:600, , drop = FALSE]
+  z <- model.matrix(~ party, nes_econ2008)[1:600, , drop = FALSE]
+
+  m <- hltm(y, x, z, compute_se = FALSE)
+
+  expect_s3_class(m, "hltm")
+  expect_false(m$se_computed)
+  expect_true(all(is.na(m$coefficients$Std_Error)))
+  expect_true(all(is.na(m$coefficients$z_value)))
+  expect_true(all(is.na(m$coefficients$p_value)))
+  expect_true(all(is.na(m$vcov)))
+  expect_true(is.finite(m$log_Lik))
+})
+
+test_that("hltm returns timing breakdown when profiling is enabled", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[1:600, -(1:3)]
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+  x <- model.matrix(~ party * educ, nes_econ2008)[1:600, , drop = FALSE]
+  z <- model.matrix(~ party, nes_econ2008)[1:600, , drop = FALSE]
+
+  m <- hltm(
+    y, x, z, compute_se = FALSE,
+    control = list(profile = TRUE, max_iter = 60, eps = 1e-3)
+  )
+
+  expect_type(m$timing, "list")
+  expect_named(m$timing, c("init", "em_total", "em", "inference", "total"))
+  expect_true(is.finite(m$timing$init))
+  expect_true(is.finite(m$timing$em_total))
+  expect_true(is.finite(m$timing$total))
+  expect_true(m$timing$total > 0)
+
+  expect_named(m$timing$em, c("estep", "mstep", "varreg", "constr"))
+  expect_true(all(vapply(m$timing$em, function(x) is.finite(x) && x >= 0, logical(1L))))
+
+  expect_named(m$timing$inference, c("loglik", "gradients", "information", "reparam"))
+  expect_true(all(vapply(m$timing$inference, function(x) is.finite(x) && x >= 0, logical(1L))))
+})
+
 test_that("build_sparse_y produces correct CSR format", {
   # Small test case
   y <- data.frame(a = c(0L, 1L, NA), b = c(1L, NA, 0L), c = c(NA, 1L, 1L))
