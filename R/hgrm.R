@@ -317,11 +317,9 @@ hgrm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
       theta_1 <- res1$params
       ll_0 <- res1$log_lik
 
-      # Convergence check on beta RMSE
-      params_c  <- apply_constraints_packed(params)
-      theta_1_c <- apply_constraints_packed(theta_1)
-      beta_prev <- params_c[(n_alpha_flat + 1):(n_alpha_flat + J)]
-      beta_curr <- theta_1_c[(n_alpha_flat + 1):(n_alpha_flat + J)]
+      # Convergence check on beta RMSE (params already constrained by em_step_fn)
+      beta_prev <- params[(n_alpha_flat + 1):(n_alpha_flat + J)]
+      beta_curr <- theta_1[(n_alpha_flat + 1):(n_alpha_flat + J)]
       beta_rmse <- sqrt(mean((beta_curr - beta_prev)^2))
       if (beta_rmse < con[["eps"]]) {
         params <- theta_1
