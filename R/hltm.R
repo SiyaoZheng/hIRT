@@ -91,11 +91,19 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   init <- match.arg(init)
 
   # control parameters
-  con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 20, C = 4,
-              prior_mu_beta = 0, prior_sigma_beta = 5, prior_type = "gaussian",
+  con <- list(max_iter = 300, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 20, C = 4,
+              prior_mu_beta = 0, prior_sigma_beta = 1.0, prior_type = "lognormal",
+              prior_warmup = "auto",
               acceleration = "squarem", profile = FALSE, verbose = FALSE,
               lazy_varreg = 0)
   con[names(control)] <- control
+
+  # Auto-detect prior warmup: lognormal prior with non-irt init needs warmup
+  # because glm/naive init gives small betas where lognormal gradient explodes
+  if (identical(con[["prior_warmup"]], "auto")) {
+    con[["prior_warmup"]] <- if (con[["prior_type"]] == "lognormal" && init != "irt") 20L else 0L
+  }
+  con[["prior_warmup"]] <- as.integer(con[["prior_warmup"]])
 
   profile <- isTRUE(con[["profile"]])
   timing <- NULL
@@ -268,13 +276,15 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
     t_eap <- es$theta_eap
     t_vap <- es$theta_vap
 
-    # M-step
+    # M-step (with prior warmup: use Inf sigma during warmup to disable prior)
     t0 <- proc.time()[["elapsed"]]
+    warmup_n <- con[["prior_warmup"]]
+    sigma_eff <- if (warmup_n > 0L && n_eval < warmup_n) Inf else con[["prior_sigma_beta"]]
     ms <- compute_mstep_ltm_cpp(
         sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
         w_mat, theta_ls, a, b,
         mu_prior = con[["prior_mu_beta"]],
-        sigma_prior = con[["prior_sigma_beta"]],
+        sigma_prior = sigma_eff,
         prior_type = prior_type_int,
         freq_weights_ = if (intercept_only) sparse_y$freq_weights else NULL)
     t_phases[2] <- proc.time()[["elapsed"]] - t0
@@ -358,9 +368,10 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
                 N, J, K, 100 * sum(is.na(as.matrix(y))) / (N * J)))
     cat(sprintf("acceleration=%s, max_iter=%d, eps=%.1e\n",
                 con$acceleration, con$max_iter, con$eps))
-    cat(sprintf("prior: %s(mu=%.1f, sigma=%s)\n",
+    cat(sprintf("prior: %s(mu=%.1f, sigma=%s), warmup=%d evals\n",
                 con$prior_type, con$prior_mu_beta,
-                if (is.infinite(con$prior_sigma_beta)) "Inf" else sprintf("%.1f", con$prior_sigma_beta)))
+                if (is.infinite(con$prior_sigma_beta)) "Inf" else sprintf("%.1f", con$prior_sigma_beta),
+                con$prior_warmup))
     cat(sprintf("constr=%s, beta_set=%d, init=%s\n", constr, beta_set, init))
     cat(sprintf("init params: alpha=[%.3f, %.3f], beta=[%.3f, %.3f], gamma=[%.3f, %.3f], lambda=[%.3f, %.3f]\n",
                 min(params[1:J]), max(params[1:J]),
