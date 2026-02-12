@@ -19,8 +19,9 @@ Imports:
     rms (>= 5.1-1),
     ltm (>= 1.1-1),
     Matrix (>= 1.2-10),
-    Rcpp
-LinkingTo: Rcpp
+    Rcpp,
+    RcppEigen
+LinkingTo: Rcpp, RcppEigen
 Suggests:
     ggplot2,
     testthat (>= 3.0.0)

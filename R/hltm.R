@@ -92,7 +92,7 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
 
   # control parameters
   con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 20, C = 4,
-              prior_mu_beta = 0, prior_sigma_beta = Inf, prior_type = "gaussian",
+              prior_mu_beta = 0, prior_sigma_beta = 5, prior_type = "gaussian",
               acceleration = "squarem", profile = FALSE, verbose = FALSE,
               lazy_varreg = 0)
   con[names(control)] <- control
@@ -375,7 +375,7 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
     # Positive alpha convention: alpha=1 -> theta_2 (standard 2-step EM),
     # alpha>1 -> acceleration. Formula: theta_prop = theta_0 + 2*alpha*r + alpha^2*v
     step_max <- 1  # grows adaptively on success
-    squarem_active <- TRUE  # pure EM map only; constraints applied post-convergence
+    squarem_active <- FALSE  # constrained map: constraints applied every EM step
 
     converged <- FALSE
     cycle <- 0L
@@ -393,7 +393,8 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
       theta_1 <- res1$params
       ll_0 <- res1$log_lik
 
-      # Convergence check on beta RMSE (constrained copies to factor out scale drift)
+      # Convergence check on beta RMSE (apply_constraints_packed is idempotent
+      # when squarem_active=FALSE, kept for safety)
       params_c <- apply_constraints_packed(params)
       theta_1_c <- apply_constraints_packed(theta_1)
       beta_prev <- params_c[(J+1):(2*J)]
@@ -554,13 +555,11 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
       stop("algorithm did not converge; try increasing max_iter.")
     }
 
-    # Apply identification constraints and polish with constrained EM.
-    # SQUAREM's unconstrained map has a slightly different quadrature fixed point
-    # than the constrained map (due to fitted_mean/fitted_var affecting the prior
-    # density on the fixed theta grid). A few constrained EM steps realign to the
-    # same fixed point as plain EM.
-    squarem_active <- FALSE
+    # Polish: a few constrained EM steps to ensure final parameters are at
+    # the constrained map's fixed point. With squarem_active=FALSE (constrained
+    # map), this typically needs 0-2 iterations.
     params <- apply_constraints_packed(params)
+    ll_polish <- -Inf
     for (polish_iter in seq_len(con[["max_iter"]] - n_eval)) {
       beta_prev_p <- params[(J+1):(2*J)]
       res_p <- em_step_fn(params)
@@ -568,11 +567,13 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
       params <- res_p$params
       if (!verbose) cat(".")
       beta_rmse_p <- sqrt(mean((params[(J+1):(2*J)] - beta_prev_p)^2))
+      ll_change <- abs(res_p$log_lik - ll_polish)
+      ll_polish <- res_p$log_lik
       if (verbose) {
-        cat(sprintf("[Polish %d | eval %d] LL=%.4f  beta_rmse=%.2e\n",
-                    polish_iter, n_eval, res_p$log_lik, beta_rmse_p))
+        cat(sprintf("[Polish %d | eval %d] LL=%.4f  beta_rmse=%.2e  dLL=%.2e\n",
+                    polish_iter, n_eval, res_p$log_lik, beta_rmse_p, ll_change))
       }
-      if (beta_rmse_p < con[["eps"]]) break
+      if (beta_rmse_p < con[["eps"]] || ll_change < 1e-6) break
     }
 
   } else if (con[["acceleration"]] == "ramsay") {
