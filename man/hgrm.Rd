@@ -11,7 +11,7 @@ hgrm(
   constr = c("latent_scale", "items"),
   beta_set = 1L,
   sign_set = TRUE,
-  init = c("naive", "glm", "irt"),
+  init = c("glm", "irt"),
   control = list()
 )
 }
@@ -39,7 +39,7 @@ the corresponding item (indexed by \code{beta_set}) be positive
 (if \code{TRUE}) or negative (if \code{FALSE})?}
 
 \item{init}{A character string indicating how item parameters are initialized. It can be
-"naive", "glm", or "irt".}
+"glm" or "irt".}
 
 \item{control}{A list of control values
 \describe{
