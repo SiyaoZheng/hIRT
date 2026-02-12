@@ -5,16 +5,16 @@ invalid_ltm <- function(x) max(x, na.rm = TRUE) != 1
 # Only observed (non-NA) entries are stored.
 # Returns list(row_ptr, col_idx, values) with 0-based column indices.
 build_sparse_y <- function(y) {
-    y_mat <- as.matrix(y)
-    N <- nrow(y_mat)
-    obs <- which(!is.na(y_mat), arr.ind = TRUE)
-    obs <- obs[order(obs[, 1L], obs[, 2L]), , drop = FALSE]
-    row_counts <- tabulate(obs[, 1L], nbins = N)
-    list(
-        row_ptr = c(0L, cumsum(row_counts)),
-        col_idx = obs[, 2L] - 1L,
-        values  = as.integer(y_mat[obs])
-    )
+  y_mat <- as.matrix(y)
+  N <- nrow(y_mat)
+  obs <- which(!is.na(y_mat), arr.ind = TRUE)
+  obs <- obs[order(obs[, 1L], obs[, 2L]), , drop = FALSE]
+  row_counts <- tabulate(obs[, 1L], nbins = N)
+  list(
+    row_ptr = c(0L, cumsum(row_counts)),
+    col_idx = obs[, 2L] - 1L,
+    values  = as.integer(y_mat[obs])
+  )
 }
 
 # Build CSR representation with unique-pattern collapsing.
@@ -22,49 +22,47 @@ build_sparse_y <- function(y) {
 # where freq_weights[p] is the count of pattern p, and expand_idx[i]
 # maps original row i to its pattern index (1-based).
 build_sparse_y_patterns <- function(y) {
-    y_mat <- as.matrix(y)
-    N <- nrow(y_mat)
-    J <- ncol(y_mat)
+  y_mat <- as.matrix(y)
 
-    # Encode each row as a string key (NA-aware)
-    # Use a fast approach: paste columns with separator
-    keys <- do.call(paste, c(as.data.frame(y_mat), list(sep = "\x01")))
+  # Encode each row as a string key (NA-aware)
+  # Use a fast approach: paste columns with separator
+  keys <- do.call(paste, c(as.data.frame(y_mat), list(sep = "\x01")))
 
-    # Find unique patterns
-    uf <- match(keys, unique(keys))  # expand_idx: maps row -> pattern (1-based)
-    ukeys <- unique(keys)
-    n_patterns <- length(ukeys)
+  # Find unique patterns
+  uf <- match(keys, unique(keys)) # expand_idx: maps row -> pattern (1-based)
+  ukeys <- unique(keys)
+  n_patterns <- length(ukeys)
 
-    # Frequency weights
-    freq_weights <- tabulate(uf, nbins = n_patterns)
+  # Frequency weights
+  freq_weights <- tabulate(uf, nbins = n_patterns)
 
-    # Build CSR from unique patterns only (first occurrence of each)
-    first_occ <- match(seq_len(n_patterns), uf)
-    y_unique <- y_mat[first_occ, , drop = FALSE]
+  # Build CSR from unique patterns only (first occurrence of each)
+  first_occ <- match(seq_len(n_patterns), uf)
+  y_unique <- y_mat[first_occ, , drop = FALSE]
 
-    obs <- which(!is.na(y_unique), arr.ind = TRUE)
-    obs <- obs[order(obs[, 1L], obs[, 2L]), , drop = FALSE]
-    row_counts <- tabulate(obs[, 1L], nbins = n_patterns)
+  obs <- which(!is.na(y_unique), arr.ind = TRUE)
+  obs <- obs[order(obs[, 1L], obs[, 2L]), , drop = FALSE]
+  row_counts <- tabulate(obs[, 1L], nbins = n_patterns)
 
-    list(
-        row_ptr      = c(0L, cumsum(row_counts)),
-        col_idx      = obs[, 2L] - 1L,
-        values       = as.integer(y_unique[obs]),
-        freq_weights = as.integer(freq_weights),
-        expand_idx   = as.integer(uf)
-    )
+  list(
+    row_ptr      = c(0L, cumsum(row_counts)),
+    col_idx      = obs[, 2L] - 1L,
+    values       = as.integer(y_unique[obs]),
+    freq_weights = as.integer(freq_weights),
+    expand_idx   = as.integer(uf)
+  )
 }
 
-glm_fit <- function(x, y, weights, tol = 1e-16, ...){
-    glm.fit(x[weights>tol, , drop = FALSE], y[weights>tol], weights = weights[weights>tol], ...)
+glm_fit <- function(x, y, weights, tol = 1e-16, ...) {
+  glm.fit(x[weights > tol, , drop = FALSE], y[weights > tol], weights = weights[weights > tol], ...)
 }
 
 # log likelihood function (return N * J matrix) y: N*J data frame alpha:
 # length J numeric vector beta: length J numeric vector theta: length N
 # numeric vector
 loglik_ltm <- function(alpha, beta, theta) {
-    util <- matrix(alpha, N, J, byrow = TRUE) + outer(theta, beta)
-    log(exp(as.matrix(y) * util)/(1 + exp(util)))
+  util <- matrix(alpha, N, J, byrow = TRUE) + outer(theta, beta)
+  log(exp(as.matrix(y) * util) / (1 + exp(util)))
 }
 
 # posterior of theta (unnormalized) (returns N-vector) y: N*J data frame
@@ -72,44 +70,44 @@ loglik_ltm <- function(alpha, beta, theta) {
 # length J numeric vector gamma: p-vector lambda: q-vector theta_k:
 # numeric scalar qw_k numeric scalar
 theta_post_ltm <- function(theta_k, qw_k) {
-    N <- nrow(y)
-    wt_k <- dnorm(theta_k - fitted_mean, sd = sqrt(fitted_var)) * qw_k  # prior density * quadrature weight
-    loglik <- rowSums(loglik_ltm(alpha, beta, rep(theta_k, N)), na.rm = TRUE)
-    logPop <- log(wt_k)
-    exp(loglik + logPop)
+  N <- nrow(y)
+  wt_k <- dnorm(theta_k - fitted_mean, sd = sqrt(fitted_var)) * qw_k # prior density * quadrature weight
+  loglik <- rowSums(loglik_ltm(alpha, beta, rep(theta_k, N)), na.rm = TRUE)
+  logPop <- log(wt_k)
+  exp(loglik + logPop)
 }
 
 # pseudo tabulated data for item J (returns K*2 matrix) y_j: N-vector w:
 # K*N matrix
 dummy_fun_ltm <- function(y_j) {
-    dummy_mat <- outer(y_j, c(0, 1), "==")  # N*H_j matrix
-    dummy_mat[is.na(dummy_mat)] <- 0
-    w %*% dummy_mat
+  dummy_mat <- outer(y_j, c(0, 1), "==") # N*H_j matrix
+  dummy_mat[is.na(dummy_mat)] <- 0
+  w %*% dummy_mat
 }
 
 # pseudo tabulated data to pseudo data frame tab: K*2 matrix theta_ls:
 # K-vector
 tab2df_ltm <- function(tab, theta_ls) {
-    theta <- rep(theta_ls, 2)
-    y <- rep(c(0, 1), each = K)
-    data.frame(y = factor(y), x = theta, wt = as.double(tab))
+  theta <- rep(theta_ls, 2)
+  y <- rep(c(0, 1), each = K)
+  data.frame(y = factor(y), x = theta, wt = as.double(tab))
 }
 
 # derivative of likelihood wrt alpha, given theta_k
 dalpha_ltm <- function(alpha, beta) {
-    putil <- plogis(matrix(alpha, K, J, byrow = TRUE) + outer(theta_ls, beta))
-    putil * (1 - putil)
+  putil <- plogis(matrix(alpha, K, J, byrow = TRUE) + outer(theta_ls, beta))
+  putil * (1 - putil)
 }
 
 # score function of alpha and beta (return a N*2 matrix) Lik: N*K matrix
 # pik: N*K matrix alpha: J-vector beta: J-vector theta_ls: K-vector
 sj_ab_ltm <- function(j) {
-    tmp_mat <- (pik * Lik/vapply(Lijk, `[`, 1:N, j, FUN.VALUE = double(N)))  # N*K matrix
-    dalpha_j <- dalpha[, j, drop = FALSE]  # K*1 matrix
-    dbeta_j <- dalpha_j * theta_ls  # K*1 matrix
-    sgn <- .subset2(y, j) * 2 - 1
-    sgn[is.na(sgn)] <- 0  # N-vector (1, -1, or 0)
-    drv_alpha <- sgn * (tmp_mat %*% dalpha_j)/Li
-    drv_beta <- sgn * (tmp_mat %*% dbeta_j)/Li
-    cbind(drv_alpha, drv_beta)
+  tmp_mat <- (pik * Lik / vapply(Lijk, `[`, 1:N, j, FUN.VALUE = double(N))) # N*K matrix
+  dalpha_j <- dalpha[, j, drop = FALSE] # K*1 matrix
+  dbeta_j <- dalpha_j * theta_ls # K*1 matrix
+  sgn <- .subset2(y, j) * 2 - 1
+  sgn[is.na(sgn)] <- 0 # N-vector (1, -1, or 0)
+  drv_alpha <- sgn * (tmp_mat %*% dalpha_j) / Li
+  drv_beta <- sgn * (tmp_mat %*% dbeta_j) / Li
+  cbind(drv_alpha, drv_beta)
 }

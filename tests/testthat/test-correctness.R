@@ -2,7 +2,7 @@ test_that("hltm produces valid output on nes_econ2008", {
   data(nes_econ2008, package = "hIRT")
   y <- nes_econ2008[, -(1:3)]
   x <- model.matrix(~ party * educ, nes_econ2008)
-  z <- model.matrix(~ party, nes_econ2008)
+  z <- model.matrix(~party, nes_econ2008)
 
   dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
   y[] <- lapply(y, dichotomize)
@@ -31,7 +31,7 @@ test_that("hltm produces valid output on nes_econ2008", {
 
   # Scores have correct dimensions
   expect_equal(nrow(m$scores), nrow(y))
-  expect_equal(ncol(m$scores), 4)  # post_mean, post_sd, prior_mean, prior_sd
+  expect_equal(ncol(m$scores), 4) # post_mean, post_sd, prior_mean, prior_sd
   expect_true(all(is.finite(m$scores$post_mean)))
   expect_true(all(is.finite(m$scores$post_sd)))
   expect_true(all(m$scores$post_sd > 0))
@@ -61,7 +61,7 @@ test_that("hltm handles missing data correctly", {
   y[na_mask == 1] <- NA
 
   x <- model.matrix(~ party * educ, nes_econ2008)
-  z <- model.matrix(~ party, nes_econ2008)
+  z <- model.matrix(~party, nes_econ2008)
 
   m <- hltm(y, x, z)
 
@@ -77,7 +77,7 @@ test_that("hltm can skip standard error computation", {
   dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
   y[] <- lapply(y, dichotomize)
   x <- model.matrix(~ party * educ, nes_econ2008)[1:600, , drop = FALSE]
-  z <- model.matrix(~ party, nes_econ2008)[1:600, , drop = FALSE]
+  z <- model.matrix(~party, nes_econ2008)[1:600, , drop = FALSE]
 
   m <- hltm(y, x, z, compute_se = FALSE)
 
@@ -96,10 +96,11 @@ test_that("hltm returns timing breakdown when profiling is enabled", {
   dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
   y[] <- lapply(y, dichotomize)
   x <- model.matrix(~ party * educ, nes_econ2008)[1:600, , drop = FALSE]
-  z <- model.matrix(~ party, nes_econ2008)[1:600, , drop = FALSE]
+  z <- model.matrix(~party, nes_econ2008)[1:600, , drop = FALSE]
 
   m <- hltm(
-    y, x, z, compute_se = FALSE,
+    y, x, z,
+    compute_se = FALSE,
     control = list(profile = TRUE, max_iter = 60, eps = 1e-3)
   )
 
@@ -155,13 +156,13 @@ test_that("compute_mstep_ltm_cpp matches R glm.fit M-step", {
   C <- 4
 
   theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
 
   # Initialize parameters and run one E-step to get realistic weights
   alpha <- rep(0, J)
-  beta  <- rep(1, J)
+  beta <- rep(1, J)
   fitted_mean <- rep(0, N)
-  fitted_var  <- rep(1, N)
+  fitted_var <- rep(1, N)
 
   sparse_y <- hIRT:::build_sparse_y(y)
   estep <- hIRT:::compute_estep_ltm_cpp(
@@ -183,21 +184,24 @@ test_that("compute_mstep_ltm_cpp matches R glm.fit M-step", {
   }
 
   alpha_r <- numeric(J)
-  beta_r  <- numeric(J)
+  beta_r <- numeric(J)
   for (j in seq_len(J)) {
     y_j <- y[[j]]
     tab <- dummy_fun_ltm_ref(y_j, w)
-    df  <- tab2df_ltm_ref(tab, theta_ls, K)
-    fit <- glm.fit(cbind(1, df$x), df$y, weights = df$wt,
-                   family = quasibinomial("logit"))
+    df <- tab2df_ltm_ref(tab, theta_ls, K)
+    fit <- glm.fit(cbind(1, df$x), df$y,
+      weights = df$wt,
+      family = quasibinomial("logit")
+    )
     alpha_r[j] <- fit$coefficients[1]
-    beta_r[j]  <- fit$coefficients[2]
+    beta_r[j] <- fit$coefficients[2]
   }
 
   # C++ M-step (sigma_prior = Inf for pure MLE to match glm.fit)
   mstep <- hIRT:::compute_mstep_ltm_cpp(
     sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
-    w, theta_ls, alpha, beta, sigma_prior = Inf
+    w, theta_ls, alpha, beta,
+    sigma_prior = Inf
   )
 
   expect_equal(mstep$alpha, alpha_r, tolerance = 1e-6)
@@ -221,12 +225,12 @@ test_that("compute_mstep_ltm_cpp handles high-NA data", {
   C <- 4
 
   theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
 
   alpha <- rep(0, J)
-  beta  <- rep(1, J)
+  beta <- rep(1, J)
   fitted_mean <- rep(0, N)
-  fitted_var  <- rep(1, N)
+  fitted_var <- rep(1, N)
 
   sparse_y <- hIRT:::build_sparse_y(y)
   estep <- hIRT:::compute_estep_ltm_cpp(
@@ -248,21 +252,24 @@ test_that("compute_mstep_ltm_cpp handles high-NA data", {
   }
 
   alpha_r <- numeric(J)
-  beta_r  <- numeric(J)
+  beta_r <- numeric(J)
   for (j in seq_len(J)) {
     y_j <- y[[j]]
     tab <- dummy_fun_ltm_ref(y_j, w)
-    df  <- tab2df_ltm_ref(tab, theta_ls, K)
-    fit <- glm.fit(cbind(1, df$x), df$y, weights = df$wt,
-                   family = quasibinomial("logit"))
+    df <- tab2df_ltm_ref(tab, theta_ls, K)
+    fit <- glm.fit(cbind(1, df$x), df$y,
+      weights = df$wt,
+      family = quasibinomial("logit")
+    )
     alpha_r[j] <- fit$coefficients[1]
-    beta_r[j]  <- fit$coefficients[2]
+    beta_r[j] <- fit$coefficients[2]
   }
 
   # C++ M-step (sigma_prior = Inf for pure MLE to match glm.fit)
   mstep <- hIRT:::compute_mstep_ltm_cpp(
     sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
-    w, theta_ls, alpha, beta, sigma_prior = Inf
+    w, theta_ls, alpha, beta,
+    sigma_prior = Inf
   )
 
   expect_equal(mstep$alpha, alpha_r, tolerance = 1e-6)
@@ -283,13 +290,13 @@ test_that("compute_estep_ltm_cpp matches R E-step", {
 
   # Use hIRT's internal GL quadrature points
   theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
 
   # Simple initial parameters
   alpha <- rep(0, J)
-  beta  <- rep(1, J)
+  beta <- rep(1, J)
   fitted_mean <- rep(0, N)
-  fitted_var  <- rep(1, N)
+  fitted_var <- rep(1, N)
 
   # R reference E-step (from theta_post_ltm logic)
   loglik_r <- function(alpha, beta, theta) {
@@ -299,7 +306,7 @@ test_that("compute_estep_ltm_cpp matches R E-step", {
 
   posterior_r <- lapply(seq_along(theta_ls), function(k) {
     theta_k <- theta_ls[k]
-    qw_k    <- qw_ls[k]
+    qw_k <- qw_ls[k]
     wt_k <- dnorm(theta_k - fitted_mean, sd = sqrt(fitted_var)) * qw_k
     loglik <- rowSums(loglik_r(alpha, beta, rep(theta_k, N)), na.rm = TRUE)
     exp(loglik + log(wt_k))
@@ -338,12 +345,12 @@ test_that("compute_estep_ltm_cpp returns finite log_lik", {
   C <- 4
 
   theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
 
   alpha <- rep(0, J)
-  beta  <- rep(1, J)
+  beta <- rep(1, J)
   fitted_mean <- rep(0, N)
-  fitted_var  <- rep(1, N)
+  fitted_var <- rep(1, N)
 
   sparse_y <- hIRT:::build_sparse_y(y)
   estep <- hIRT:::compute_estep_ltm_cpp(
@@ -361,7 +368,7 @@ test_that("compute_estep_ltm_cpp returns finite log_lik", {
   }
   posterior_r <- lapply(seq_along(theta_ls), function(k) {
     theta_k <- theta_ls[k]
-    qw_k    <- qw_ls[k]
+    qw_k <- qw_ls[k]
     wt_k <- dnorm(theta_k - fitted_mean, sd = sqrt(fitted_var)) * qw_k
     loglik <- rowSums(loglik_r(alpha, beta, rep(theta_k, N)), na.rm = TRUE)
     exp(loglik + log(wt_k))
@@ -379,7 +386,7 @@ test_that("hltm converges with synthetic Heywood-case data using init='irt'", {
 
   # 10 items: 9 normal + 1 extreme (P(y=1) ~ 0.95)
   alpha <- c(rep(0, 9), 3.0)
-  beta  <- c(rep(1, 9), 1.0)
+  beta <- c(rep(1, 9), 1.0)
   y <- data.frame(matrix(NA, N, 10))
   for (j in 1:10) {
     p <- plogis(alpha[j] + beta[j] * theta)
@@ -402,7 +409,7 @@ test_that("hltm with prior_sigma_beta=Inf recovers pure MLE behavior", {
   y[] <- lapply(y, dichotomize)
 
   m_prior <- hltm(y, control = list(prior_sigma_beta = 1.5, prior_type = "lognormal"))
-  m_mle   <- hltm(y, control = list(prior_sigma_beta = Inf))
+  m_mle <- hltm(y, control = list(prior_sigma_beta = Inf))
 
   # Both should converge and produce valid results
   expect_s3_class(m_prior, "hltm")
@@ -413,7 +420,8 @@ test_that("hltm with prior_sigma_beta=Inf recovers pure MLE behavior", {
   # For well-behaved data, prior and MLE results should be close
   # (weakly informative prior barely affects reasonable estimates)
   expect_equal(m_prior$coefficients$Estimate, m_mle$coefficients$Estimate,
-               tolerance = 0.1)
+    tolerance = 0.1
+  )
 })
 
 test_that("lognormal prior shrinks extreme discrimination in M-step", {
@@ -428,14 +436,14 @@ test_that("lognormal prior shrinks extreme discrimination in M-step", {
   C <- 4
 
   theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
 
   # Use extreme starting values to simulate Heywood case
   alpha <- rep(0, J)
-  beta  <- rep(1, J)
-  beta[1] <- 25  # Heywood-like extreme value
+  beta <- rep(1, J)
+  beta[1] <- 25 # Heywood-like extreme value
   fitted_mean <- rep(0, N)
-  fitted_var  <- rep(1, N)
+  fitted_var <- rep(1, N)
 
   sparse_y <- hIRT:::build_sparse_y(y)
   estep <- hIRT:::compute_estep_ltm_cpp(
@@ -473,14 +481,14 @@ test_that("gaussian prior shrinks extreme discrimination in M-step", {
   C <- 4
 
   theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
 
   # Use extreme starting values to simulate Heywood case
   alpha <- rep(0, J)
-  beta  <- rep(1, J)
-  beta[1] <- 25  # Heywood-like extreme value
+  beta <- rep(1, J)
+  beta[1] <- 25 # Heywood-like extreme value
   fitted_mean <- rep(0, N)
-  fitted_var  <- rep(1, N)
+  fitted_var <- rep(1, N)
 
   sparse_y <- hIRT:::build_sparse_y(y)
   estep <- hIRT:::compute_estep_ltm_cpp(
@@ -510,7 +518,7 @@ test_that("SQUAREM and plain EM converge to same solution", {
   data(nes_econ2008, package = "hIRT")
   y <- nes_econ2008[, -(1:3)]
   x <- model.matrix(~ party * educ, nes_econ2008)
-  z <- model.matrix(~ party, nes_econ2008)
+  z <- model.matrix(~party, nes_econ2008)
   dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
   y[] <- lapply(y, dichotomize)
 
@@ -553,7 +561,7 @@ test_that("hltm2 produces valid output on nes_econ2008", {
   data(nes_econ2008, package = "hIRT")
   y <- nes_econ2008[, -(1:3)]
   x <- model.matrix(~ party * educ, nes_econ2008)
-  z <- model.matrix(~ party, nes_econ2008)
+  z <- model.matrix(~party, nes_econ2008)
   dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
   y[] <- lapply(y, dichotomize)
 
@@ -579,7 +587,7 @@ test_that("hltm2 SQUAREM and plain EM converge to same solution", {
   data(nes_econ2008, package = "hIRT")
   y <- nes_econ2008[, -(1:3)]
   x <- model.matrix(~ party * educ, nes_econ2008)
-  z <- model.matrix(~ party, nes_econ2008)
+  z <- model.matrix(~party, nes_econ2008)
   dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
   y[] <- lapply(y, dichotomize)
 
@@ -591,10 +599,14 @@ test_that("hltm2 SQUAREM and plain EM converge to same solution", {
   m_train <- hltm(y[id_train, ], x[id_train, ], z[id_train, ])
   ic <- lapply(coef_item(m_train), function(x) x[["Estimate"]])
 
-  m_sq <- hltm2(y[id_test, ], x[id_test, ], z[id_test, ], item_coefs = ic,
-                control = list(acceleration = "squarem"))
-  m_em <- hltm2(y[id_test, ], x[id_test, ], z[id_test, ], item_coefs = ic,
-                control = list(acceleration = "none"))
+  m_sq <- hltm2(y[id_test, ], x[id_test, ], z[id_test, ],
+    item_coefs = ic,
+    control = list(acceleration = "squarem")
+  )
+  m_em <- hltm2(y[id_test, ], x[id_test, ], z[id_test, ],
+    item_coefs = ic,
+    control = list(acceleration = "none")
+  )
 
   expect_equal(m_sq$log_Lik, m_em$log_Lik, tolerance = 0.1)
   expect_equal(m_sq$coefficients$Estimate, m_em$coefficients$Estimate, tolerance = 0.01)
@@ -635,12 +647,12 @@ test_that("pattern-collapsed E-step matches full E-step", {
   K <- 20
 
   theta_ls <- 4 * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- 4 * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- 4 * hIRT:::GLpoints[[K]][["w"]]
 
   alpha <- rep(0, J)
-  beta  <- rep(1, J)
+  beta <- rep(1, J)
   fitted_mean <- rep(0, N)
-  fitted_var  <- rep(1, N)
+  fitted_var <- rep(1, N)
 
   # Full E-step
   sparse_full <- hIRT:::build_sparse_y(y)
@@ -680,10 +692,10 @@ test_that("pattern-collapsed M-step matches full M-step", {
   K <- 20
 
   theta_ls <- 4 * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- 4 * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- 4 * hIRT:::GLpoints[[K]][["w"]]
 
   alpha <- rep(0, J)
-  beta  <- rep(1, J)
+  beta <- rep(1, J)
 
   # Full path
   sparse_full <- hIRT:::build_sparse_y(y)
@@ -693,7 +705,8 @@ test_that("pattern-collapsed M-step matches full M-step", {
   )
   ms_full <- hIRT:::compute_mstep_ltm_cpp(
     sparse_full$row_ptr, sparse_full$col_idx, sparse_full$values,
-    es_full$w, theta_ls, alpha, beta, sigma_prior = Inf
+    es_full$w, theta_ls, alpha, beta,
+    sigma_prior = Inf
   )
 
   # Pattern-collapsed path
@@ -707,7 +720,8 @@ test_that("pattern-collapsed M-step matches full M-step", {
   )
   ms_pat <- hIRT:::compute_mstep_ltm_cpp(
     sparse_pat$row_ptr, sparse_pat$col_idx, sparse_pat$values,
-    es_pat$w, theta_ls, alpha, beta, sigma_prior = Inf,
+    es_pat$w, theta_ls, alpha, beta,
+    sigma_prior = Inf,
     freq_weights_ = sparse_pat$freq_weights
   )
 
@@ -750,13 +764,13 @@ test_that("compute_estep_grm_cpp matches R E-step", {
   K <- 15
   C <- 3
   theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
 
   # Simple initial item parameters
   alpha <- lapply(H, function(h) c(Inf, seq(1, -(h - 2), length.out = h - 1), -Inf))
   beta <- rep(1, J)
   fitted_mean <- rep(0, N)
-  fitted_var  <- rep(1, N)
+  fitted_var <- rep(1, N)
 
   # R reference E-step (inline, no environment hacking)
   loglik_grm_r <- function(alpha, beta, theta, y) {
@@ -806,7 +820,7 @@ test_that("compute_mstep_grm_cpp matches R lrm.fit M-step", {
   K <- 25
   C <- 4
   theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
-  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
 
   # Initialize with lrm.fit (same as hgrm "glm" init)
   y_imp <- y
@@ -819,7 +833,7 @@ test_that("compute_mstep_grm_cpp matches R lrm.fit M-step", {
   beta_init <- vapply(pseudo_lrm, function(x) x[[length(x)]], double(1L))
   alpha_init <- lapply(pseudo_lrm, function(x) c(Inf, x[-length(x)], -Inf))
   fitted_mean <- rep(0, N)
-  fitted_var  <- rep(1, N)
+  fitted_var <- rep(1, N)
 
   # One E-step to get weights
   sparse_y <- hIRT:::build_sparse_y(y)
@@ -845,8 +859,9 @@ test_that("compute_mstep_grm_cpp matches R lrm.fit M-step", {
   }
   pseudo_tab <- Map(dummy_fun_r, y, H, MoreArgs = list(w = w))
   pseudo_y <- lapply(pseudo_tab, tab2df_r, theta_ls = theta_ls, K = K)
-  pseudo_lrm_r <- lapply(pseudo_y, function(df)
-    rms::lrm.fit(df[["x"]], df[["y"]], weights = df[["wt"]])[["coefficients"]])
+  pseudo_lrm_r <- lapply(pseudo_y, function(df) {
+    rms::lrm.fit(df[["x"]], df[["y"]], weights = df[["wt"]])[["coefficients"]]
+  })
   beta_r <- vapply(pseudo_lrm_r, function(x) x[[length(x)]], double(1L))
   alpha_r <- lapply(pseudo_lrm_r, function(x) c(Inf, x[-length(x)], -Inf))
   af_r <- hIRT:::flatten_alpha_grm(alpha_r, H)
@@ -867,7 +882,7 @@ test_that("hgrm produces valid output on nes_econ2008", {
   data(nes_econ2008, package = "hIRT")
   y <- nes_econ2008[, -(1:3)]
   x <- model.matrix(~ party * educ, nes_econ2008)
-  z <- model.matrix(~ party, nes_econ2008)
+  z <- model.matrix(~party, nes_econ2008)
 
   m <- hgrm(y, x, z)
 
@@ -896,7 +911,7 @@ test_that("hgrm SQUAREM and plain EM converge to same solution", {
   data(nes_econ2008, package = "hIRT")
   y <- nes_econ2008[, -(1:3)]
   x <- model.matrix(~ party * educ, nes_econ2008)
-  z <- model.matrix(~ party, nes_econ2008)
+  z <- model.matrix(~party, nes_econ2008)
 
   m_sq <- hgrm(y, x, z, compute_se = FALSE, control = list(acceleration = "squarem"))
   m_em <- hgrm(y, x, z, compute_se = FALSE, control = list(acceleration = "none"))
@@ -948,7 +963,7 @@ test_that("hgrm2 produces valid output", {
   data(nes_econ2008, package = "hIRT")
   y <- nes_econ2008[, -(1:3)]
   x <- model.matrix(~ party * educ, nes_econ2008)
-  z <- model.matrix(~ party, nes_econ2008)
+  z <- model.matrix(~party, nes_econ2008)
 
   set.seed(42)
   n <- nrow(nes_econ2008)

@@ -81,7 +81,7 @@
 #' nes_m1
 
 hgrm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
-                 beta_set = 1L, sign_set = TRUE, init = c("glm", "irt"),
+                 beta_set = 1L, sign_set = TRUE, init = c("naive", "glm", "irt"),
                  control = list(), compute_se = TRUE) {
 
   # match call
@@ -126,10 +126,10 @@ hgrm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   init <- match.arg(init)
 
   # control parameters
-  con <- list(max_iter = 300, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 25, C = 4,
-              prior_mu_beta = 0, prior_sigma_beta = 1.0, prior_type = "lognormal",
-              prior_warmup = "auto",
-              acceleration = "squarem", verbose = FALSE)
+  con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 25, C = 4,
+              prior_mu_beta = 0, prior_sigma_beta = Inf, prior_type = "lognormal",
+              prior_warmup = 0L,
+              acceleration = "none", verbose = FALSE)
   con[names(control)] <- control
 
   # Auto-detect prior warmup
@@ -157,7 +157,12 @@ hgrm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   }
 
   # initialization of alpha and beta parameters
-  if (init == "glm"){
+  if (init == "naive"){
+
+    alpha <- lapply(H, function(x) c(Inf, seq(1, -1, length.out = x - 1), -Inf))
+    beta <- vapply(y, function(y) cov(y, theta_eap, use = "complete.obs")/var(theta_eap), double(1L))
+
+  } else if (init == "glm"){
 
     pseudo_lrm <- lapply(y_imp, function(y) lrm.fit(theta_eap, y)[["coefficients"]])
     beta <- vapply(pseudo_lrm, function(x) x[[length(x)]], double(1L))

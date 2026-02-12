@@ -46,7 +46,7 @@
 #' nes_m1
 
 hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
-                 beta_set = 1L, sign_set = TRUE, init = c("tetrachoric", "glm", "naive", "irt"),
+                 beta_set = 1L, sign_set = TRUE, init = c("naive", "glm", "tetrachoric", "irt"),
                  control = list(), compute_se = TRUE) {
 
   # match call
@@ -91,10 +91,10 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   init <- match.arg(init)
 
   # control parameters
-  con <- list(max_iter = 300, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 20, C = 4,
-              prior_mu_beta = 0, prior_sigma_beta = 1.0, prior_type = "lognormal",
-              prior_warmup = "auto",
-              acceleration = "squarem", profile = FALSE, verbose = FALSE,
+  con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 25, C = 4,
+              prior_mu_beta = 0, prior_sigma_beta = Inf, prior_type = "lognormal",
+              prior_warmup = 0L,
+              acceleration = "none", profile = FALSE, verbose = FALSE,
               lazy_varreg = 0)
   con[names(control)] <- control
 
