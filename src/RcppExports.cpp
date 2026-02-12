@@ -11,6 +11,53 @@ Rcpp::Rostream<true>&  Rcpp::Rcout = Rcpp::Rcpp_cout_get();
 Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
+// compute_estep_grm_cpp
+List compute_estep_grm_cpp(IntegerVector row_ptr, IntegerVector col_idx, IntegerVector values, NumericVector alpha_flat, IntegerVector alpha_offsets, IntegerVector H, NumericVector beta, NumericVector theta_ls, NumericVector qw_ls, NumericVector fitted_mean, NumericVector fitted_var, Rcpp::Nullable<IntegerVector> freq_weights_);
+RcppExport SEXP _hIRT_compute_estep_grm_cpp(SEXP row_ptrSEXP, SEXP col_idxSEXP, SEXP valuesSEXP, SEXP alpha_flatSEXP, SEXP alpha_offsetsSEXP, SEXP HSEXP, SEXP betaSEXP, SEXP theta_lsSEXP, SEXP qw_lsSEXP, SEXP fitted_meanSEXP, SEXP fitted_varSEXP, SEXP freq_weights_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< IntegerVector >::type row_ptr(row_ptrSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type col_idx(col_idxSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type values(valuesSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type alpha_flat(alpha_flatSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type alpha_offsets(alpha_offsetsSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type H(HSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type theta_ls(theta_lsSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type qw_ls(qw_lsSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type fitted_mean(fitted_meanSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type fitted_var(fitted_varSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Nullable<IntegerVector> >::type freq_weights_(freq_weights_SEXP);
+    rcpp_result_gen = Rcpp::wrap(compute_estep_grm_cpp(row_ptr, col_idx, values, alpha_flat, alpha_offsets, H, beta, theta_ls, qw_ls, fitted_mean, fitted_var, freq_weights_));
+    return rcpp_result_gen;
+END_RCPP
+}
+// compute_mstep_grm_cpp
+List compute_mstep_grm_cpp(IntegerVector row_ptr, IntegerVector col_idx, IntegerVector values, NumericMatrix w, NumericVector theta_ls, NumericVector alpha_flat_init, IntegerVector alpha_offsets, IntegerVector H, NumericVector beta_init, int max_nr_iter, double nr_tol, double mu_prior, double sigma_prior, int prior_type, Rcpp::Nullable<IntegerVector> freq_weights_);
+RcppExport SEXP _hIRT_compute_mstep_grm_cpp(SEXP row_ptrSEXP, SEXP col_idxSEXP, SEXP valuesSEXP, SEXP wSEXP, SEXP theta_lsSEXP, SEXP alpha_flat_initSEXP, SEXP alpha_offsetsSEXP, SEXP HSEXP, SEXP beta_initSEXP, SEXP max_nr_iterSEXP, SEXP nr_tolSEXP, SEXP mu_priorSEXP, SEXP sigma_priorSEXP, SEXP prior_typeSEXP, SEXP freq_weights_SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< IntegerVector >::type row_ptr(row_ptrSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type col_idx(col_idxSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type values(valuesSEXP);
+    Rcpp::traits::input_parameter< NumericMatrix >::type w(wSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type theta_ls(theta_lsSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type alpha_flat_init(alpha_flat_initSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type alpha_offsets(alpha_offsetsSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type H(HSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type beta_init(beta_initSEXP);
+    Rcpp::traits::input_parameter< int >::type max_nr_iter(max_nr_iterSEXP);
+    Rcpp::traits::input_parameter< double >::type nr_tol(nr_tolSEXP);
+    Rcpp::traits::input_parameter< double >::type mu_prior(mu_priorSEXP);
+    Rcpp::traits::input_parameter< double >::type sigma_prior(sigma_priorSEXP);
+    Rcpp::traits::input_parameter< int >::type prior_type(prior_typeSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Nullable<IntegerVector> >::type freq_weights_(freq_weights_SEXP);
+    rcpp_result_gen = Rcpp::wrap(compute_mstep_grm_cpp(row_ptr, col_idx, values, w, theta_ls, alpha_flat_init, alpha_offsets, H, beta_init, max_nr_iter, nr_tol, mu_prior, sigma_prior, prior_type, freq_weights_));
+    return rcpp_result_gen;
+END_RCPP
+}
 // compute_estep_ltm_cpp
 List compute_estep_ltm_cpp(IntegerVector row_ptr, IntegerVector col_idx, IntegerVector values, NumericVector alpha, NumericVector beta, NumericVector theta_ls, NumericVector qw_ls, NumericVector fitted_mean, NumericVector fitted_var, Rcpp::Nullable<IntegerVector> freq_weights_);
 RcppExport SEXP _hIRT_compute_estep_ltm_cpp(SEXP row_ptrSEXP, SEXP col_idxSEXP, SEXP valuesSEXP, SEXP alphaSEXP, SEXP betaSEXP, SEXP theta_lsSEXP, SEXP qw_lsSEXP, SEXP fitted_meanSEXP, SEXP fitted_varSEXP, SEXP freq_weights_SEXP) {
@@ -80,6 +127,8 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
+    {"_hIRT_compute_estep_grm_cpp", (DL_FUNC) &_hIRT_compute_estep_grm_cpp, 12},
+    {"_hIRT_compute_mstep_grm_cpp", (DL_FUNC) &_hIRT_compute_mstep_grm_cpp, 15},
     {"_hIRT_compute_estep_ltm_cpp", (DL_FUNC) &_hIRT_compute_estep_ltm_cpp, 10},
     {"_hIRT_compute_mstep_ltm_cpp", (DL_FUNC) &_hIRT_compute_mstep_ltm_cpp, 13},
     {"_hIRT_compute_inference_ltm_cpp", (DL_FUNC) &_hIRT_compute_inference_ltm_cpp, 14},

@@ -730,3 +730,257 @@ test_that("hltm with pattern collapsing matches without (intercept-only)", {
   expect_equal(nrow(m$scores), nrow(y))
   expect_true(all(is.finite(m$scores$post_mean)))
 })
+
+# ============================================================
+# GRM C++ E-step / M-step tests
+# ============================================================
+
+test_that("compute_estep_grm_cpp matches R E-step", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+
+  N <- nrow(y)
+  J <- ncol(y)
+
+  # Factor and convert to integers (same as hgrm)
+  y[] <- lapply(y, factor, exclude = c(NA, NaN))
+  y[] <- lapply(y, as.integer)
+  H <- vapply(y, max, integer(1L), na.rm = TRUE)
+
+  K <- 15
+  C <- 3
+  theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
+  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+
+  # Simple initial item parameters
+  alpha <- lapply(H, function(h) c(Inf, seq(1, -(h - 2), length.out = h - 1), -Inf))
+  beta <- rep(1, J)
+  fitted_mean <- rep(0, N)
+  fitted_var  <- rep(1, N)
+
+  # R reference E-step (inline, no environment hacking)
+  loglik_grm_r <- function(alpha, beta, theta, y) {
+    util <- outer(theta, beta)
+    alpha_l <- simplify2array(unname(Map(function(a, yj) a[yj], alpha, y)))
+    alpha_h <- simplify2array(unname(Map(function(a, yj) a[yj + 1L], alpha, y)))
+    log(plogis(util + alpha_l) - plogis(util + alpha_h))
+  }
+  posterior_r <- lapply(seq_along(theta_ls), function(k) {
+    wt_k <- dnorm(theta_ls[k] - fitted_mean, sd = sqrt(fitted_var)) * qw_ls[k]
+    loglik <- rowSums(loglik_grm_r(alpha, beta, rep(theta_ls[k], N), y), na.rm = TRUE)
+    exp(loglik + log(wt_k))
+  })
+  tmp <- matrix(unlist(posterior_r), N, K)
+  w_r <- t(sweep(tmp, 1, rowSums(tmp), FUN = "/"))
+  theta_eap_r <- as.double(t(theta_ls %*% w_r))
+  theta_vap_r <- as.double(t(theta_ls^2 %*% w_r) - theta_eap_r^2)
+
+  # C++ E-step
+  sparse_y <- hIRT:::build_sparse_y(y)
+  af <- hIRT:::flatten_alpha_grm(alpha, H)
+  es <- hIRT:::compute_estep_grm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    af$alpha_flat, af$alpha_offsets, as.integer(H), beta,
+    theta_ls, qw_ls, fitted_mean, fitted_var
+  )
+
+  expect_equal(dim(es$w), c(K, N))
+  expect_equal(es$w, w_r, tolerance = 1e-10)
+  expect_equal(es$theta_eap, theta_eap_r, tolerance = 1e-10)
+  expect_equal(es$theta_vap, theta_vap_r, tolerance = 1e-10)
+  expect_true(is.finite(es$log_lik))
+  expect_true(es$log_lik < 0)
+})
+
+test_that("compute_mstep_grm_cpp matches R lrm.fit M-step", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+
+  N <- nrow(y)
+  J <- ncol(y)
+
+  y[] <- lapply(y, factor, exclude = c(NA, NaN))
+  y[] <- lapply(y, as.integer)
+  H <- vapply(y, max, integer(1L), na.rm = TRUE)
+
+  K <- 25
+  C <- 4
+  theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
+  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+
+  # Initialize with lrm.fit (same as hgrm "glm" init)
+  y_imp <- y
+  if (anyNA(y)) y_imp[] <- lapply(y, hIRT:::impute)
+  theta_eap <- {
+    tmp <- princomp(y_imp, cor = TRUE)$scores[, 1]
+    (tmp - mean(tmp)) / sd(tmp)
+  }
+  pseudo_lrm <- lapply(y_imp, function(yj) rms::lrm.fit(theta_eap, yj)[["coefficients"]])
+  beta_init <- vapply(pseudo_lrm, function(x) x[[length(x)]], double(1L))
+  alpha_init <- lapply(pseudo_lrm, function(x) c(Inf, x[-length(x)], -Inf))
+  fitted_mean <- rep(0, N)
+  fitted_var  <- rep(1, N)
+
+  # One E-step to get weights
+  sparse_y <- hIRT:::build_sparse_y(y)
+  af <- hIRT:::flatten_alpha_grm(alpha_init, H)
+  es <- hIRT:::compute_estep_grm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    af$alpha_flat, af$alpha_offsets, as.integer(H), beta_init,
+    theta_ls, qw_ls, fitted_mean, fitted_var
+  )
+  w <- es$w
+
+  # R M-step reference (inline using lrm.fit)
+  dummy_fun_r <- function(y_j, H_j, w) {
+    dummy_mat <- outer(y_j, 1:H_j, "==")
+    dummy_mat[is.na(dummy_mat)] <- 0
+    w %*% dummy_mat
+  }
+  tab2df_r <- function(tab, theta_ls, K) {
+    H_j <- ncol(tab)
+    theta <- rep(theta_ls, H_j)
+    yv <- rep(1:H_j, each = K)
+    data.frame(y = factor(yv), x = theta, wt = as.double(tab))
+  }
+  pseudo_tab <- Map(dummy_fun_r, y, H, MoreArgs = list(w = w))
+  pseudo_y <- lapply(pseudo_tab, tab2df_r, theta_ls = theta_ls, K = K)
+  pseudo_lrm_r <- lapply(pseudo_y, function(df)
+    rms::lrm.fit(df[["x"]], df[["y"]], weights = df[["wt"]])[["coefficients"]])
+  beta_r <- vapply(pseudo_lrm_r, function(x) x[[length(x)]], double(1L))
+  alpha_r <- lapply(pseudo_lrm_r, function(x) c(Inf, x[-length(x)], -Inf))
+  af_r <- hIRT:::flatten_alpha_grm(alpha_r, H)
+
+  # C++ M-step (flat prior)
+  ms <- hIRT:::compute_mstep_grm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    w, theta_ls, af$alpha_flat, af$alpha_offsets, as.integer(H), beta_init,
+    sigma_prior = Inf
+  )
+
+  # Tolerance is a bit looser because NR (Fisher scoring) vs IRLS may differ slightly
+  expect_equal(unname(ms$beta), unname(beta_r), tolerance = 1e-3)
+  expect_equal(unname(ms$alpha_flat), unname(af_r$alpha_flat), tolerance = 1e-3)
+})
+
+test_that("hgrm produces valid output on nes_econ2008", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  x <- model.matrix(~ party * educ, nes_econ2008)
+  z <- model.matrix(~ party, nes_econ2008)
+
+  m <- hgrm(y, x, z)
+
+  expect_s3_class(m, "hgrm")
+  expect_s3_class(m, "hIRT")
+  expect_equal(m$N, nrow(y))
+  expect_equal(m$J, ncol(y))
+  expect_equal(m$p, ncol(x))
+  expect_equal(m$q, ncol(z))
+
+  coefs <- m$coefficients
+  expect_true(all(is.finite(coefs$Estimate)))
+  se_finite <- coefs$Std_Error[!is.na(coefs$Std_Error)]
+  expect_true(all(is.finite(se_finite)))
+  expect_true(all(se_finite > 0))
+
+  expect_true(is.finite(m$log_Lik))
+  expect_true(m$log_Lik < 0)
+
+  expect_equal(nrow(m$scores), nrow(y))
+  expect_true(all(is.finite(m$scores$post_mean)))
+  expect_true(all(m$scores$post_sd > 0))
+})
+
+test_that("hgrm SQUAREM and plain EM converge to same solution", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  x <- model.matrix(~ party * educ, nes_econ2008)
+  z <- model.matrix(~ party, nes_econ2008)
+
+  m_sq <- hgrm(y, x, z, compute_se = FALSE, control = list(acceleration = "squarem"))
+  m_em <- hgrm(y, x, z, compute_se = FALSE, control = list(acceleration = "none"))
+
+  expect_equal(m_sq$log_Lik, m_em$log_Lik, tolerance = 0.1)
+  expect_equal(m_sq$coefficients$Estimate, m_em$coefficients$Estimate, tolerance = 0.01)
+})
+
+test_that("hgrm compute_se=FALSE skips SE", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+
+  m <- hgrm(y, compute_se = FALSE)
+
+  expect_s3_class(m, "hgrm")
+  expect_false(m$se_computed)
+  expect_true(all(is.na(m$coefficients$Std_Error)))
+  expect_true(is.finite(m$log_Lik))
+})
+
+test_that("hgrm handles missing data", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+
+  # Add more NAs
+  set.seed(42)
+  na_mask <- matrix(rbinom(nrow(y) * ncol(y), 1, 0.3), nrow(y), ncol(y))
+  y[na_mask == 1] <- NA
+
+  m <- hgrm(y, compute_se = FALSE)
+
+  expect_s3_class(m, "hgrm")
+  expect_true(is.finite(m$log_Lik))
+  expect_true(all(is.finite(m$scores$post_mean)))
+})
+
+test_that("hgrm with items constraint works", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+
+  m <- hgrm(y, constr = "items", compute_se = FALSE)
+
+  expect_s3_class(m, "hgrm")
+  expect_equal(m$constr, "items")
+  expect_true(is.finite(m$log_Lik))
+})
+
+test_that("hgrm2 produces valid output", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  x <- model.matrix(~ party * educ, nes_econ2008)
+  z <- model.matrix(~ party, nes_econ2008)
+
+  set.seed(42)
+  n <- nrow(nes_econ2008)
+  id_train <- sample.int(n, n %/% 2)
+  id_test <- setdiff(1:n, id_train)
+
+  m_train <- hgrm(y[id_train, ], x[id_train, ], z[id_train, ])
+  ic <- lapply(coef_item(m_train), function(x) x[["Estimate"]])
+
+  m2 <- hgrm2(y[id_test, ], x[id_test, ], z[id_test, ], item_coefs = ic)
+
+  expect_s3_class(m2, "hgrm")
+  expect_true(is.finite(m2$log_Lik))
+  expect_true(m2$log_Lik < 0)
+  expect_equal(nrow(m2$scores), length(id_test))
+  expect_true(all(is.finite(m2$scores$post_mean)))
+  expect_true(all(m2$scores$post_sd > 0))
+})
+
+test_that("flatten_alpha_grm and unflatten_alpha_grm are inverse", {
+  H <- c(3L, 4L, 2L, 5L)
+  alpha <- list(
+    c(Inf, 1.5, 0.5, -Inf),
+    c(Inf, 2.0, 1.0, 0.0, -Inf),
+    c(Inf, 0.3, -Inf),
+    c(Inf, 3.0, 2.0, 1.0, 0.0, -Inf)
+  )
+
+  af <- hIRT:::flatten_alpha_grm(alpha, H)
+  alpha_back <- hIRT:::unflatten_alpha_grm(af$alpha_flat, af$alpha_offsets, H)
+
+  expect_equal(alpha_back, alpha)
+  expect_equal(length(af$alpha_flat), sum(H - 1L))
+  expect_equal(length(af$alpha_offsets), length(H) + 1L)
+})

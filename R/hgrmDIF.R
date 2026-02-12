@@ -26,7 +26,7 @@
 #'   the corresponding item (indexed by \code{beta_set}) be positive
 #'   (if \code{TRUE}) or negative (if \code{FALSE})?
 #' @param init A character string indicating how item parameters are initialized. It can be
-#'   "glm" or "irt".
+#'   "glm", "naive", or "irt".
 #' @param control A list of control values
 #' \describe{
 #'  \item{max_iter}{The maximum number of iterations of the EM algorithm.
@@ -81,7 +81,7 @@
 hgrmDIF <- function(y, x = NULL, z = NULL, x0 = x[, -1, drop = FALSE],
                     items_dif = 1L, form_dif = c("uniform", "non-uniform"),
                     constr = c("latent_scale"), beta_set = 1L, sign_set = TRUE,
-                    init = c("glm", "irt"), control = list()) {
+                    init = c("glm", "naive", "irt"), control = list()) {
 
   # match call
   cl <- match.call()
@@ -151,7 +151,12 @@ hgrmDIF <- function(y, x = NULL, z = NULL, x0 = x[, -1, drop = FALSE],
   }
 
   # initialization of alpha and beta parameters
-  if (init == "glm"){
+  if (init == "naive"){
+
+    alpha <- lapply(H, function(x) c(Inf, seq(1, -1, length.out = x - 1), -Inf))
+    beta <- vapply(y, function(y) cov(y, theta_eap, use = "complete.obs")/var(theta_eap), double(1L))
+
+  } else if (init == "glm"){
 
     pseudo_lrm <- lapply(y_imp, function(y) lrm.fit(theta_eap, y)[["coefficients"]])
     beta <- vapply(pseudo_lrm, function(x) x[[length(x)]], double(1L))

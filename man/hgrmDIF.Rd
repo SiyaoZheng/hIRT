@@ -14,7 +14,7 @@ hgrmDIF(
   constr = c("latent_scale"),
   beta_set = 1L,
   sign_set = TRUE,
-  init = c("glm", "irt"),
+  init = c("glm", "naive", "irt"),
   control = list()
 )
 }
@@ -50,7 +50,7 @@ the corresponding item (indexed by \code{beta_set}) be positive
 (if \code{TRUE}) or negative (if \code{FALSE})?}
 
 \item{init}{A character string indicating how item parameters are initialized. It can be
-"glm" or "irt".}
+"glm", "naive", or "irt".}
 
 \item{control}{A list of control values
 \describe{

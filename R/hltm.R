@@ -46,7 +46,7 @@
 #' nes_m1
 
 hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
-                 beta_set = 1L, sign_set = TRUE, init = c("tetrachoric", "glm", "irt"),
+                 beta_set = 1L, sign_set = TRUE, init = c("tetrachoric", "glm", "naive", "irt"),
                  control = list(), compute_se = TRUE) {
 
   # match call
@@ -138,7 +138,10 @@ hltm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   }
 
   # initialization of alpha and beta parameters
-  if (init == "glm"){
+  if (init == "naive"){
+    alpha <- rep(0, J)
+    beta <- vapply(y, function(y) cov(y, theta_eap, use = "complete.obs")/var(theta_eap), double(1L))
+  } else if (init == "glm"){
     pseudo_logit <- lapply(y_imp, function(y) glm.fit(cbind(1, theta_eap), y, family = binomial("logit"))[["coefficients"]])
     beta <- vapply(pseudo_logit, function(x) x[2L], double(1L))
     alpha <- vapply(pseudo_logit, function(x) x[1L], double(1L))

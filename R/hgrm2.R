@@ -126,7 +126,7 @@ hgrm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
   con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 25, C = 4)
   con[names(control)] <- control
 
-  # set environments for utility functions
+  # set environments for utility functions (needed for inference)
   environment(loglik_grm) <- environment(theta_post_grm) <- environment(dummy_fun_grm) <- environment(tab2df_grm) <- environment()
 
   # GL points
@@ -137,6 +137,12 @@ hgrm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
   # imputation
   y_imp <- y
   if(anyNA(y)) y_imp[] <- lapply(y, impute)
+
+  # Pre-compute sparse representation and flat alpha for C++
+  sparse_y <- build_sparse_y(y)
+  af_obj <- flatten_alpha_grm(alpha, H)
+  alpha_offsets <- af_obj$alpha_offsets
+  H_int <- as.integer(H)
 
   # pca for initial values of theta_eap
   theta_eap <- {
@@ -160,23 +166,15 @@ hgrm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
     gamma_prev <- gamma
     lambda_prev <- lambda
 
-    # construct w_ik
-    posterior <- Map(theta_post_grm, theta_ls, qw_ls)
-    w <- {
-      tmp <- matrix(unlist(posterior), N, K)
-      t(sweep(tmp, 1, rowSums(tmp), FUN = "/"))
-    }
-
-    # # maximization
-    # pseudo_tab <- Map(dummy_fun_grm, y, H)
-    # pseudo_y <- lapply(pseudo_tab, tab2df_grm, theta_ls = theta_ls)
-    # pseudo_lrm <- lapply(pseudo_y, function(df) lrm.fit(df[["x"]], df[["y"]], weights = df[["wt"]])[["coefficients"]])
-    # beta <- vapply(pseudo_lrm, function(x) x[[length(x)]], double(1L))
-    # alpha <- lapply(pseudo_lrm, function(x) c(Inf, x[-length(x)], -Inf))
-
-    # EAP and VAP estimates of latent preferences
-    theta_eap <- t(theta_ls %*% w)
-    theta_vap <- t(theta_ls^2 %*% w) - theta_eap^2
+    # E-step (C++)
+    es <- compute_estep_grm_cpp(
+        sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+        af_obj$alpha_flat, alpha_offsets, H_int, beta, theta_ls, qw_ls,
+        fitted_mean, fitted_var
+    )
+    w <- es$w
+    theta_eap <- es$theta_eap
+    theta_vap <- es$theta_vap
 
     # variance regression
     gamma <- lm_opr %*% theta_eap

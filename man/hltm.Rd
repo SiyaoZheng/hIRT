@@ -11,7 +11,7 @@ hltm(
   constr = c("latent_scale", "items"),
   beta_set = 1L,
   sign_set = TRUE,
-  init = c("tetrachoric", "glm", "irt"),
+  init = c("tetrachoric", "glm", "naive", "irt"),
   control = list(),
   compute_se = TRUE
 )
@@ -40,33 +40,29 @@ the corresponding item (indexed by \code{beta_set}) be positive
 (if \code{TRUE}) or negative (if \code{FALSE})?}
 
 \item{init}{A character string indicating how item parameters are initialized. It can be
-"tetrachoric", "glm", or "irt".}
+"glm" or "irt".}
 
 \item{control}{A list of control values
 \describe{
- \item{max_iter}{The maximum number of iterations of the EM algorithm.
-   The default is 150.}
+ \item{max_iter}{The maximum number of EM F-evaluations.
+   The default is 300.}
  \item{eps}{Tolerance parameter used to determine convergence of the
-  EM algorithm. Specifically, iterations continue until the Euclidean
-  distance between \eqn{\beta_{n}} and \eqn{\beta_{n-1}} falls under \code{eps},
-  where \eqn{\beta} is the vector of item discrimination parameters.
-  \code{eps}=1e-4 by default.}
+  EM algorithm. Specifically, iterations continue until the RMSE of
+  beta changes falls under \code{eps}.
+  \code{eps}=1e-3 by default.}
  \item{max_iter2}{The maximum number of iterations of the conditional
    maximization procedures for updating \eqn{\gamma} and \eqn{\lambda}.
    The default is 15.}
  \item{eps2}{Tolerance parameter used to determine convergence of the
    conditional maximization procedures for updating \eqn{\gamma} and
-   \eqn{\lambda}. Specifically, iterations continue until the Euclidean
-  distance between two consecutive log likelihoods falls under \code{eps2}.
-  \code{eps2}=1e-3 by default.}
+   \eqn{\lambda}. \code{eps2}=1e-3 by default.}
  \item{K}{Number of Gauss-Legendre quadrature points for the E-step. The default is 25.}
  \item{C}{[-C, C] sets the range of integral in the E-step. \code{C}=4 by default.}
- \item{prior_mu_beta}{Mean parameter for the lognormal prior on \eqn{|\beta|}.
-   The default is 0.}
- \item{prior_sigma_beta}{Standard deviation parameter for the lognormal prior on
-   \eqn{|\beta|}. The default is 1.5; set to \code{Inf} for MLE.}
- \item{profile}{Logical. If \code{TRUE}, return staged timing diagnostics in the
-   \code{timing} slot of the fitted object. The default is \code{FALSE}.}
+ \item{acceleration}{"squarem" (default) or "none".}
+ \item{prior_sigma_beta}{Prior SD for discrimination parameters. Default 1.0.}
+ \item{prior_mu_beta}{Prior mean for discrimination (log scale if lognormal). Default 0.}
+ \item{prior_type}{"lognormal" (default) or "gaussian".}
+ \item{prior_warmup}{Number of F-evals before activating prior. "auto" or integer.}
 }}
 
 \item{compute_se}{Logical. If \code{TRUE} (default), compute standard

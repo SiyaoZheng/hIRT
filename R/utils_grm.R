@@ -1,6 +1,36 @@
 # check if a vector has at least two valid responses
 invalid_grm <- function(x) max(x, na.rm = TRUE) < 2
 
+# Convert alpha list to flat array + offsets for C++.
+# alpha: length-J list, each element c(Inf, tau_1, ..., tau_{H-1}, -Inf)
+# H: integer vector of category counts per item
+# Returns list(alpha_flat, alpha_offsets) where:
+#   alpha_flat = c(tau_1^(1),...,tau_{H1-1}^(1), tau_1^(2),...) (finite thresholds only)
+#   alpha_offsets = integer(J+1), cumulative offsets
+flatten_alpha_grm <- function(alpha, H) {
+    J <- length(alpha)
+    alpha_flat <- unlist(lapply(alpha, function(a) a[-c(1L, length(a))]))
+    alpha_offsets <- c(0L, cumsum(as.integer(H - 1L)))
+    list(alpha_flat = as.double(alpha_flat),
+         alpha_offsets = as.integer(alpha_offsets))
+}
+
+# Convert flat array back to alpha list.
+# alpha_flat: flat threshold vector
+# alpha_offsets: integer(J+1) offsets
+# H: integer vector of category counts
+# Returns alpha list with Inf/-Inf boundaries
+unflatten_alpha_grm <- function(alpha_flat, alpha_offsets, H) {
+    J <- length(H)
+    alpha <- vector("list", J)
+    for (j in seq_len(J)) {
+        idx_start <- alpha_offsets[j] + 1L  # R 1-based
+        idx_end   <- alpha_offsets[j + 1L]
+        alpha[[j]] <- c(Inf, alpha_flat[idx_start:idx_end], -Inf)
+    }
+    alpha
+}
+
 lrm_fit <- function(x, y, weights, tol = 1e-16, ...){
   valid <- weights>tol & !is.na(y)
   lrm.fit(x[valid, , drop = FALSE], y[valid], weights = weights[valid], ...)

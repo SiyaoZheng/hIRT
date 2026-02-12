@@ -29,6 +29,6 @@ License: GPL (>= 3)
 Encoding: UTF-8
 LazyData: true
 SystemRequirements: C++17
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3
 URL: http://github.com/xiangzhou09/hIRT
 BugReports: http://github.com/xiangzhou09/hIRT
