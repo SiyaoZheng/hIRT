@@ -17,6 +17,44 @@ build_sparse_y <- function(y) {
     )
 }
 
+# Build CSR representation with unique-pattern collapsing.
+# Returns list(row_ptr, col_idx, values, freq_weights, expand_idx)
+# where freq_weights[p] is the count of pattern p, and expand_idx[i]
+# maps original row i to its pattern index (1-based).
+build_sparse_y_patterns <- function(y) {
+    y_mat <- as.matrix(y)
+    N <- nrow(y_mat)
+    J <- ncol(y_mat)
+
+    # Encode each row as a string key (NA-aware)
+    # Use a fast approach: paste columns with separator
+    keys <- do.call(paste, c(as.data.frame(y_mat), list(sep = "\x01")))
+
+    # Find unique patterns
+    uf <- match(keys, unique(keys))  # expand_idx: maps row -> pattern (1-based)
+    ukeys <- unique(keys)
+    n_patterns <- length(ukeys)
+
+    # Frequency weights
+    freq_weights <- tabulate(uf, nbins = n_patterns)
+
+    # Build CSR from unique patterns only (first occurrence of each)
+    first_occ <- match(seq_len(n_patterns), uf)
+    y_unique <- y_mat[first_occ, , drop = FALSE]
+
+    obs <- which(!is.na(y_unique), arr.ind = TRUE)
+    obs <- obs[order(obs[, 1L], obs[, 2L]), , drop = FALSE]
+    row_counts <- tabulate(obs[, 1L], nbins = n_patterns)
+
+    list(
+        row_ptr      = c(0L, cumsum(row_counts)),
+        col_idx      = obs[, 2L] - 1L,
+        values       = as.integer(y_unique[obs]),
+        freq_weights = as.integer(freq_weights),
+        expand_idx   = as.integer(uf)
+    )
+}
+
 glm_fit <- function(x, y, weights, tol = 1e-16, ...){
     glm.fit(x[weights>tol, , drop = FALSE], y[weights>tol], weights = weights[weights>tol], ...)
 }

@@ -104,7 +104,7 @@ test_that("hltm returns timing breakdown when profiling is enabled", {
   )
 
   expect_type(m$timing, "list")
-  expect_named(m$timing, c("init", "em_total", "em", "inference", "total"))
+  expect_named(m$timing, c("init", "em_total", "em", "inference", "total", "em_evals"))
   expect_true(is.finite(m$timing$init))
   expect_true(is.finite(m$timing$em_total))
   expect_true(is.finite(m$timing$total))
@@ -113,7 +113,7 @@ test_that("hltm returns timing breakdown when profiling is enabled", {
   expect_named(m$timing$em, c("estep", "mstep", "varreg", "constr"))
   expect_true(all(vapply(m$timing$em, function(x) is.finite(x) && x >= 0, logical(1L))))
 
-  expect_named(m$timing$inference, c("loglik", "gradients", "information", "reparam"))
+  expect_named(m$timing$inference, c("total", "reparam"))
   expect_true(all(vapply(m$timing$inference, function(x) is.finite(x) && x >= 0, logical(1L))))
 })
 
@@ -401,7 +401,7 @@ test_that("hltm with prior_sigma_beta=Inf recovers pure MLE behavior", {
   dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
   y[] <- lapply(y, dichotomize)
 
-  m_prior <- hltm(y, control = list(prior_sigma_beta = 1.5))
+  m_prior <- hltm(y, control = list(prior_sigma_beta = 1.5, prior_type = "lognormal"))
   m_mle   <- hltm(y, control = list(prior_sigma_beta = Inf))
 
   # Both should converge and produce valid results
@@ -443,11 +443,11 @@ test_that("lognormal prior shrinks extreme discrimination in M-step", {
     alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var
   )
 
-  # M-step with prior: extreme beta should be pulled back
+  # M-step with lognormal prior: extreme beta should be pulled back
   mstep_prior <- hIRT:::compute_mstep_ltm_cpp(
     sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
     estep$w, theta_ls, alpha, beta,
-    mu_prior = 0, sigma_prior = 1.5
+    mu_prior = 0, sigma_prior = 1.5, prior_type = 0L
   )
 
   # M-step without prior: pure MLE
@@ -459,4 +459,274 @@ test_that("lognormal prior shrinks extreme discrimination in M-step", {
 
   # Prior should pull extreme beta closer to reasonable range
   expect_true(abs(mstep_prior$beta[1]) < abs(mstep_mle$beta[1]))
+})
+
+test_that("gaussian prior shrinks extreme discrimination in M-step", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+
+  N <- nrow(y)
+  J <- ncol(y)
+  K <- 25
+  C <- 4
+
+  theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
+  qw_ls    <- C * hIRT:::GLpoints[[K]][["w"]]
+
+  # Use extreme starting values to simulate Heywood case
+  alpha <- rep(0, J)
+  beta  <- rep(1, J)
+  beta[1] <- 25  # Heywood-like extreme value
+  fitted_mean <- rep(0, N)
+  fitted_var  <- rep(1, N)
+
+  sparse_y <- hIRT:::build_sparse_y(y)
+  estep <- hIRT:::compute_estep_ltm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var
+  )
+
+  # M-step with Gaussian prior
+  mstep_gauss <- hIRT:::compute_mstep_ltm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    estep$w, theta_ls, alpha, beta,
+    mu_prior = 0, sigma_prior = 5, prior_type = 1L
+  )
+
+  # M-step without prior: pure MLE
+  mstep_mle <- hIRT:::compute_mstep_ltm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    estep$w, theta_ls, alpha, beta,
+    sigma_prior = Inf
+  )
+
+  # Gaussian prior should pull extreme beta closer to zero
+  expect_true(abs(mstep_gauss$beta[1]) < abs(mstep_mle$beta[1]))
+})
+
+test_that("SQUAREM and plain EM converge to same solution", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  x <- model.matrix(~ party * educ, nes_econ2008)
+  z <- model.matrix(~ party, nes_econ2008)
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+
+  m_sq <- hltm(y, x, z, control = list(acceleration = "squarem", max_iter = 500))
+  m_em <- hltm(y, x, z, control = list(acceleration = "none", max_iter = 500))
+
+  # Log-likelihoods should match closely
+  expect_equal(m_sq$log_Lik, m_em$log_Lik, tolerance = 0.1)
+
+  # Coefficients should match
+  expect_equal(m_sq$coefficients$Estimate, m_em$coefficients$Estimate, tolerance = 0.01)
+})
+
+test_that("acceleration='none' produces valid output", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+
+  m <- hltm(y, control = list(acceleration = "none"))
+
+  expect_s3_class(m, "hltm")
+  expect_true(is.finite(m$log_Lik))
+  expect_true(m$log_Lik < 0)
+})
+
+test_that("SQUAREM profiling reports em_evals", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[1:600, -(1:3)]
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+
+  m <- hltm(y, compute_se = FALSE, control = list(profile = TRUE))
+
+  expect_true(m$timing$em_evals > 0)
+  expect_true(is.integer(m$timing$em_evals))
+})
+
+test_that("hltm2 produces valid output on nes_econ2008", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  x <- model.matrix(~ party * educ, nes_econ2008)
+  z <- model.matrix(~ party, nes_econ2008)
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+
+  set.seed(42)
+  n <- nrow(nes_econ2008)
+  id_train <- sample.int(n, n %/% 2)
+  id_test <- setdiff(1:n, id_train)
+
+  m_train <- hltm(y[id_train, ], x[id_train, ], z[id_train, ])
+  ic <- lapply(coef_item(m_train), function(x) x[["Estimate"]])
+
+  m2 <- hltm2(y[id_test, ], x[id_test, ], z[id_test, ], item_coefs = ic)
+
+  expect_s3_class(m2, "hltm")
+  expect_true(is.finite(m2$log_Lik))
+  expect_true(m2$log_Lik < 0)
+  expect_equal(nrow(m2$scores), length(id_test))
+  expect_true(all(is.finite(m2$scores$post_mean)))
+  expect_true(all(m2$scores$post_sd > 0))
+})
+
+test_that("hltm2 SQUAREM and plain EM converge to same solution", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  x <- model.matrix(~ party * educ, nes_econ2008)
+  z <- model.matrix(~ party, nes_econ2008)
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+
+  set.seed(42)
+  n <- nrow(nes_econ2008)
+  id_train <- sample.int(n, n %/% 2)
+  id_test <- setdiff(1:n, id_train)
+
+  m_train <- hltm(y[id_train, ], x[id_train, ], z[id_train, ])
+  ic <- lapply(coef_item(m_train), function(x) x[["Estimate"]])
+
+  m_sq <- hltm2(y[id_test, ], x[id_test, ], z[id_test, ], item_coefs = ic,
+                control = list(acceleration = "squarem"))
+  m_em <- hltm2(y[id_test, ], x[id_test, ], z[id_test, ], item_coefs = ic,
+                control = list(acceleration = "none"))
+
+  expect_equal(m_sq$log_Lik, m_em$log_Lik, tolerance = 0.1)
+  expect_equal(m_sq$coefficients$Estimate, m_em$coefficients$Estimate, tolerance = 0.01)
+})
+
+test_that("build_sparse_y_patterns produces correct output", {
+  y <- data.frame(a = c(0L, 1L, 0L, 1L), b = c(1L, 0L, 1L, 0L))
+  sp <- hIRT:::build_sparse_y_patterns(y)
+
+  # Rows 1,3 are identical (0,1) and rows 2,4 are identical (1,0)
+  expect_equal(length(sp$freq_weights), 2L)
+  expect_equal(sum(sp$freq_weights), 4L)
+  expect_equal(length(sp$expand_idx), 4L)
+  # Patterns should map correctly
+  expect_equal(sp$expand_idx[1], sp$expand_idx[3])
+  expect_equal(sp$expand_idx[2], sp$expand_idx[4])
+  expect_true(sp$expand_idx[1] != sp$expand_idx[2])
+})
+
+test_that("build_sparse_y_patterns handles NAs as distinct patterns", {
+  y <- data.frame(a = c(0L, NA, 0L), b = c(1L, 1L, 1L))
+  sp <- hIRT:::build_sparse_y_patterns(y)
+
+  # Row 1 (0,1) and row 3 (0,1) are same; row 2 (NA,1) is different
+  expect_equal(length(sp$freq_weights), 2L)
+  expect_equal(sp$expand_idx[1], sp$expand_idx[3])
+  expect_true(sp$expand_idx[1] != sp$expand_idx[2])
+})
+
+test_that("pattern-collapsed E-step matches full E-step", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+
+  N <- nrow(y)
+  J <- ncol(y)
+  K <- 20
+
+  theta_ls <- 4 * hIRT:::GLpoints[[K]][["x"]]
+  qw_ls    <- 4 * hIRT:::GLpoints[[K]][["w"]]
+
+  alpha <- rep(0, J)
+  beta  <- rep(1, J)
+  fitted_mean <- rep(0, N)
+  fitted_var  <- rep(1, N)
+
+  # Full E-step
+  sparse_full <- hIRT:::build_sparse_y(y)
+  es_full <- hIRT:::compute_estep_ltm_cpp(
+    sparse_full$row_ptr, sparse_full$col_idx, sparse_full$values,
+    alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var
+  )
+
+  # Pattern-collapsed E-step
+  sparse_pat <- hIRT:::build_sparse_y_patterns(y)
+  N_pat <- length(sparse_pat$freq_weights)
+  es_pat <- hIRT:::compute_estep_ltm_cpp(
+    sparse_pat$row_ptr, sparse_pat$col_idx, sparse_pat$values,
+    alpha, beta, theta_ls, qw_ls,
+    rep(0, N_pat), rep(1, N_pat),
+    freq_weights_ = sparse_pat$freq_weights
+  )
+
+  # Log-likelihoods should match
+  expect_equal(es_pat$log_lik, es_full$log_lik, tolerance = 1e-8)
+
+  # EAP/VAP should match after expansion
+  eap_expanded <- es_pat$theta_eap[sparse_pat$expand_idx]
+  vap_expanded <- es_pat$theta_vap[sparse_pat$expand_idx]
+  expect_equal(eap_expanded, es_full$theta_eap, tolerance = 1e-10)
+  expect_equal(vap_expanded, es_full$theta_vap, tolerance = 1e-10)
+})
+
+test_that("pattern-collapsed M-step matches full M-step", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+
+  N <- nrow(y)
+  J <- ncol(y)
+  K <- 20
+
+  theta_ls <- 4 * hIRT:::GLpoints[[K]][["x"]]
+  qw_ls    <- 4 * hIRT:::GLpoints[[K]][["w"]]
+
+  alpha <- rep(0, J)
+  beta  <- rep(1, J)
+
+  # Full path
+  sparse_full <- hIRT:::build_sparse_y(y)
+  es_full <- hIRT:::compute_estep_ltm_cpp(
+    sparse_full$row_ptr, sparse_full$col_idx, sparse_full$values,
+    alpha, beta, theta_ls, qw_ls, rep(0, N), rep(1, N)
+  )
+  ms_full <- hIRT:::compute_mstep_ltm_cpp(
+    sparse_full$row_ptr, sparse_full$col_idx, sparse_full$values,
+    es_full$w, theta_ls, alpha, beta, sigma_prior = Inf
+  )
+
+  # Pattern-collapsed path
+  sparse_pat <- hIRT:::build_sparse_y_patterns(y)
+  N_pat <- length(sparse_pat$freq_weights)
+  es_pat <- hIRT:::compute_estep_ltm_cpp(
+    sparse_pat$row_ptr, sparse_pat$col_idx, sparse_pat$values,
+    alpha, beta, theta_ls, qw_ls,
+    rep(0, N_pat), rep(1, N_pat),
+    freq_weights_ = sparse_pat$freq_weights
+  )
+  ms_pat <- hIRT:::compute_mstep_ltm_cpp(
+    sparse_pat$row_ptr, sparse_pat$col_idx, sparse_pat$values,
+    es_pat$w, theta_ls, alpha, beta, sigma_prior = Inf,
+    freq_weights_ = sparse_pat$freq_weights
+  )
+
+  expect_equal(ms_pat$alpha, ms_full$alpha, tolerance = 1e-8)
+  expect_equal(ms_pat$beta, ms_full$beta, tolerance = 1e-8)
+})
+
+test_that("hltm with pattern collapsing matches without (intercept-only)", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  dichotomize <- function(x) findInterval(x, c(mean(x, na.rm = TRUE)))
+  y[] <- lapply(y, dichotomize)
+
+  # Intercept-only: triggers pattern collapsing
+  m <- hltm(y)
+
+  expect_s3_class(m, "hltm")
+  expect_true(is.finite(m$log_Lik))
+  expect_true(m$log_Lik < 0)
+  expect_equal(nrow(m$scores), nrow(y))
+  expect_true(all(is.finite(m$scores$post_mean)))
 })

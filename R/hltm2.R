@@ -100,7 +100,8 @@ hltm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
   colnames(z) <- colnames(z) %||% paste0("x", 1:q)
 
   # control parameters
-  con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 25, C = 4)
+  con <- list(max_iter = 150, max_iter2 = 15, eps = 1e-03, eps2 = 1e-03, K = 20, C = 4,
+              acceleration = "squarem")
   con[names(control)] <- control
 
   # set environments for utility functions
@@ -115,6 +116,9 @@ hltm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
   y_imp <- y
   if(anyNA(y)) y_imp[] <- lapply(y, impute)
 
+  # Pre-compute sparse representation for C++ E-step
+  sparse_y <- build_sparse_y(y)
+
   # pca for initial values of theta_eap
   theta_eap <- {
     tmp <- princomp(y_imp, cor = TRUE)$scores[, 1]
@@ -128,71 +132,173 @@ hltm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
   fitted_mean <- as.double(x %*% gamma)
   fitted_var <- rep(1, N)
 
-  # EM algorithm
-  for (iter in seq(1, con[["max_iter"]])) {
+  # EM fixed-point mapping: takes packed params c(gamma, lambda), returns list(params, log_lik)
+  em_step_fn <- function(params) {
+    g <- params[1:p]
+    l <- params[(p+1):(p+q)]
+    fm <- as.double(x %*% g)
+    fv <- exp(as.double(z %*% l))
 
-    # store previous parameters
-    # alpha_prev <- alpha
-    # beta_prev <- beta
-    gamma_prev <- gamma
-    lambda_prev <- lambda
+    # E-step (C++)
+    es <- compute_estep_ltm_cpp(
+        sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+        alpha, beta, theta_ls, qw_ls, fm, fv
+    )
+    ll <- es$log_lik
+    t_eap <- es$theta_eap
+    t_vap <- es$theta_vap
 
-    # construct w_ik
-    posterior <- Map(theta_post_ltm, theta_ls, qw_ls)
-    w <- {
-      tmp <- matrix(unlist(posterior), N, K)
-      t(sweep(tmp, 1, rowSums(tmp), FUN = "/"))
-    }
+    # Variance regression
+    g <- lm_opr %*% t_eap
+    r2 <- (t_eap - x %*% g)^2 + t_vap
 
-    # # maximization
-    # pseudo_tab <- lapply(y, dummy_fun_ltm)
-    # pseudo_y <- lapply(pseudo_tab, tab2df_ltm, theta_ls = theta_ls)
-    # pseudo_logit <- lapply(pseudo_y, function(df) glm.fit(cbind(1, df[["x"]]),
-    #                                                       df[["y"]], weights = df[["wt"]], family = quasibinomial("logit"))[["coefficients"]])
-    # beta <- vapply(pseudo_logit, function(x) x[2L], double(1L))
-    # alpha <- vapply(pseudo_logit, function(x) x[1L], double(1L))
-
-    # EAP and VAP estimates of latent preferences
-    theta_eap <- t(theta_ls %*% w)
-    theta_vap <- t(theta_ls^2 %*% w) - theta_eap^2
-
-    # variance regression
-    gamma <- lm_opr %*% theta_eap
-    r2 <- (theta_eap - x %*% gamma)^2 + theta_vap
-
-    if (ncol(z)==1) lambda <- log(mean(r2)) else{
+    if (ncol(z) == 1) {
+      l <- log(mean(r2))
+    } else {
       s2 <- glm.fit(x = z, y = r2, intercept = FALSE, family = Gamma(link = "log"))[["fitted.values"]]
-      loglik <- -0.5 * (log(s2) + r2/s2)
-      LL0 <- sum(loglik)
-      dLL <- 1
-      for (m in seq(1, con[["max_iter2"]])) {
-        gamma <- lm.wfit(x, theta_eap, w = 1/s2)[["coefficients"]]
-        r2 <- (theta_eap - x %*% gamma)^2 + theta_vap
+      loglik_vr <- -0.5 * (log(s2) + r2/s2)
+      LL0 <- sum(loglik_vr)
+      for (m_vr in seq(1, con[["max_iter2"]])) {
+        g <- lm.wfit(x, t_eap, w = 1/s2)[["coefficients"]]
+        r2 <- (t_eap - x %*% g)^2 + t_vap
         var_reg <- glm.fit(x = z, y = r2, intercept = FALSE, family = Gamma(link = "log"))
         s2 <- var_reg[["fitted.values"]]
-        loglik <- -0.5 * (log(s2) + r2/s2)
-        LL_temp <- sum(loglik)
-        dLL <- LL_temp - LL0
-        if (dLL < con[["eps2"]])
-          break
+        loglik_vr <- -0.5 * (log(s2) + r2/s2)
+        LL_temp <- sum(loglik_vr)
+        if (LL_temp - LL0 < con[["eps2"]]) break
         LL0 <- LL_temp
       }
-      lambda <- var_reg[["coefficients"]]
+      l <- var_reg[["coefficients"]]
     }
 
-    fitted_mean <- as.double(x %*% gamma)
-    fitted_var <- exp(as.double(z %*% lambda))
-    cat(".")
-
-    # check convergence
-    if (sqrt(mean((gamma/gamma_prev - 1)^2)) < con[["eps"]]) {
-      cat("\n converged at iteration", iter, "\n")
-      break
-    } else if (iter == con[["max_iter"]]) {
-      stop("algorithm did not converge; try increasing max_iter.")
-      break
-    } else next
+    list(params = c(as.double(g), as.double(l)), log_lik = ll)
   }
+
+  # Pack initial parameters
+  params <- c(as.double(gamma), as.double(lambda))
+  n_eval <- 0L
+
+  # EM algorithm (plain or SQUAREM)
+  if (con[["acceleration"]] == "squarem") {
+    # SQUAREM S3 (Varadhan & Roland 2008)
+    step_max <- 1
+    converged <- FALSE
+    cycle <- 0L
+
+    while (n_eval < con[["max_iter"]]) {
+      cycle <- cycle + 1L
+
+      # Step 1: F(theta_0) -> theta_1
+      res1 <- em_step_fn(params)
+      n_eval <- n_eval + 1L
+      cat(".")
+
+      theta_1 <- res1$params
+      ll_0 <- res1$log_lik
+
+      # Convergence check on gamma RMSE
+      gamma_prev <- params[1:p]
+      gamma_curr <- theta_1[1:p]
+      gamma_rmse <- sqrt(mean((gamma_curr - gamma_prev)^2))
+      if (gamma_rmse < con[["eps"]]) {
+        params <- theta_1
+        converged <- TRUE
+        cat("\n converged at evaluation", n_eval, "\n")
+        break
+      }
+
+      if (n_eval >= con[["max_iter"]]) { params <- theta_1; break }
+
+      # Step 2: F(theta_1) -> theta_2
+      res2 <- em_step_fn(theta_1)
+      n_eval <- n_eval + 1L
+      cat(".")
+
+      theta_2 <- res2$params
+
+      if (n_eval >= con[["max_iter"]]) { params <- theta_2; break }
+
+      # SQUAREM extrapolation
+      r <- theta_1 - params
+      v <- (theta_2 - theta_1) - r
+      sr2 <- sum(r^2)
+      sv2 <- sum(v^2)
+
+      if (sv2 < 1e-30) { params <- theta_2; next }
+
+      alpha_raw <- sqrt(sr2 / sv2)
+      alpha_sq <- min(step_max, max(1, alpha_raw))
+
+      theta_prop <- params + 2 * alpha_sq * r + alpha_sq^2 * v
+
+      # Guard: NaN/Inf check
+      if (any(!is.finite(theta_prop))) {
+        params <- theta_2
+        step_max <- max(1, step_max / 2)
+        next
+      }
+
+      # Step 3: Stabilize with F(theta_prop)
+      res3 <- em_step_fn(theta_prop)
+      n_eval <- n_eval + 1L
+      cat(".")
+
+      ll_prop <- res3$log_lik
+
+      # Monotonicity check
+      if (!is.finite(ll_prop)) {
+        params <- theta_2
+        step_max <- max(1, step_max / 2)
+      } else if (ll_prop >= ll_0 - 1e-4) {
+        params <- res3$params
+        if (alpha_sq >= step_max - 0.01) step_max <- 2 * alpha_sq
+      } else {
+        params <- theta_2
+        step_max <- max(1, step_max / 2)
+      }
+    }
+
+    if (!converged && n_eval >= con[["max_iter"]]) {
+      stop("algorithm did not converge; try increasing max_iter.")
+    }
+
+  } else {
+    # Plain EM
+    converged <- FALSE
+    for (iter in seq(1, con[["max_iter"]])) {
+      gamma_prev <- params[1:p]
+      res <- em_step_fn(params)
+      n_eval <- n_eval + 1L
+      params <- res$params
+      cat(".")
+
+      gamma_curr <- params[1:p]
+      gamma_rmse <- sqrt(mean((gamma_curr - gamma_prev)^2))
+
+      if (gamma_rmse < con[["eps"]]) {
+        converged <- TRUE
+        cat("\n converged at iteration", iter, "\n")
+        break
+      }
+    }
+    if (!converged) {
+      stop("algorithm did not converge; try increasing max_iter.")
+    }
+  }
+
+  # Unpack final parameters
+  gamma  <- params[1:p]
+  lambda <- params[(p+1):(p+q)]
+  fitted_mean <- as.double(x %*% gamma)
+  fitted_var  <- exp(as.double(z %*% lambda))
+
+  # Final E-step for theta_eap/theta_vap
+  final_estep <- compute_estep_ltm_cpp(
+      sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+      alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var
+  )
+  theta_eap <- final_estep$theta_eap
+  theta_vap <- final_estep$theta_vap
 
   gamma <- setNames(as.double(gamma), paste("x", colnames(x), sep = ""))
   lambda <- setNames(as.double(lambda), paste("z", colnames(z), sep = ""))

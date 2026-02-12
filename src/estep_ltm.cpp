@@ -47,10 +47,17 @@ List compute_estep_ltm_cpp(
     NumericVector theta_ls,
     NumericVector qw_ls,
     NumericVector fitted_mean,
-    NumericVector fitted_var
+    NumericVector fitted_var,
+    Rcpp::Nullable<IntegerVector> freq_weights_ = R_NilValue
 ) {
     const int N = fitted_mean.size();
     const int K = theta_ls.size();
+
+    // Pattern collapsing: if freq_weights is provided, N is the number of
+    // unique patterns and log_lik is weighted by frequency.
+    const bool use_weights = freq_weights_.isNotNull();
+    IntegerVector freq_weights;
+    if (use_weights) freq_weights = IntegerVector(freq_weights_);
 
     // Pre-compute log quadrature weights (constant across iterations)
     std::vector<double> log_qw(K);
@@ -80,6 +87,19 @@ List compute_estep_ltm_cpp(
     const double* fm  = fitted_mean.begin();
     const double* fv  = fitted_var.begin();
 
+    // P2: Precompute J*K tables for u_jk = alpha[j] + beta[j] * theta_ls[k]
+    // and softplus(u_jk), eliminating redundant computation in the inner loop.
+    const int J = alpha.size();
+    std::vector<double> util_table(J * K);
+    std::vector<double> sp_table(J * K);
+    for (int j = 0; j < J; j++) {
+        for (int k = 0; k < K; k++) {
+            const double u = a[j] + b[j] * tls[k];
+            util_table[j * K + k] = u;
+            sp_table[j * K + k] = softplus_(u);
+        }
+    }
+
     for (int i = 0; i < N; i++) {
         const int start = rp[i];
         const int end   = rp[i + 1];
@@ -91,11 +111,11 @@ List compute_estep_ltm_cpp(
         for (int k = 0; k < K; k++) {
             const double theta_k = tls[k];
 
-            // Log-likelihood: sum over observed entries only
+            // Log-likelihood: sum over observed entries only (table lookup)
             double loglik = 0.0;
             for (int idx = start; idx < end; idx++) {
-                const double util = a[ci[idx]] + b[ci[idx]] * theta_k;
-                loglik += val[idx] * util - softplus_(util);
+                const int jk = ci[idx] * K + k;
+                loglik += val[idx] * util_table[jk] - sp_table[jk];
             }
 
             // Log-prior: log N(theta_k; fitted_mean_i, sd_i)
@@ -115,7 +135,8 @@ List compute_estep_ltm_cpp(
             sum_exp += std::exp(log_post[k] - max_lp);
         }
         const double log_norm = max_lp + std::log(sum_exp);
-        total_log_lik += log_norm;
+        // Weight log-likelihood by pattern frequency if applicable
+        total_log_lik += use_weights ? freq_weights[i] * log_norm : log_norm;
 
         // Posterior weights, EAP, VAP
         double eap  = 0.0;
@@ -172,11 +193,19 @@ List compute_mstep_ltm_cpp(
     int max_nr_iter = 25,
     double nr_tol = 1e-8,
     double mu_prior = 0.0,
-    double sigma_prior = 1.5
+    double sigma_prior = 1e30,
+    int prior_type = 1,
+    Rcpp::Nullable<IntegerVector> freq_weights_ = R_NilValue
 ) {
     const int N = w.ncol();
     const int K = w.nrow();
     const int J = alpha_init.size();
+
+    // Pattern collapsing: if freq_weights is provided, weight sufficient
+    // statistics by pattern frequency.
+    const bool use_weights = freq_weights_.isNotNull();
+    IntegerVector freq_weights;
+    if (use_weights) freq_weights = IntegerVector(freq_weights_);
 
     // Raw pointers for tight loops
     const int*    rp  = row_ptr.begin();
@@ -185,25 +214,26 @@ List compute_mstep_ltm_cpp(
     const double* tls = theta_ls.begin();
 
     // Phase A: Sparse sufficient statistics
-    // suff_1[j*K + k] = sum_i w(k,i) * I(y_ij == 1)
-    // suff_0[j*K + k] = sum_i w(k,i) * I(y_ij == 0)
+    // suff_1[j*K + k] = sum_i w(k,i) * I(y_ij == 1) [* freq_weights[i]]
+    // suff_0[j*K + k] = sum_i w(k,i) * I(y_ij == 0) [* freq_weights[i]]
     std::vector<double> suff_1(J * K, 0.0);
     std::vector<double> suff_0(J * K, 0.0);
 
     for (int i = 0; i < N; i++) {
         const int start = rp[i];
         const int end   = rp[i + 1];
+        const double fw = use_weights ? (double)freq_weights[i] : 1.0;
         for (int idx = start; idx < end; idx++) {
             const int j = ci[idx];
             const int y_ij = val[idx];
             const int base = j * K;
             if (y_ij == 1) {
                 for (int k = 0; k < K; k++) {
-                    suff_1[base + k] += w(k, i);
+                    suff_1[base + k] += fw * w(k, i);
                 }
             } else {
                 for (int k = 0; k < K; k++) {
-                    suff_0[base + k] += w(k, i);
+                    suff_0[base + k] += fw * w(k, i);
                 }
             }
         }
@@ -250,19 +280,23 @@ List compute_mstep_ltm_cpp(
                 h_bb -= w_k * tls[k] * tls[k];
             }
 
-            // Lognormal(mu_prior, sigma_prior^2) prior on |b|
+            // Prior on beta: 0=lognormal on |beta|, 1=Gaussian N(0, sigma^2) on beta
             if (sigma_prior < 1e30) {
-                const double abs_b = std::abs(b);
-                if (abs_b > 1e-10) {
-                    const double log_abs_b = std::log(abs_b);
-                    const double sig2 = sigma_prior * sigma_prior;
-                    g_b += -(1.0 + (log_abs_b - mu_prior) / sig2) / b;
-                    // Use true Hessian in concave region; in convex region
-                    // (extreme |b|), substitute the mode curvature -1/(sig2*b^2)
-                    // to keep the total Hessian negative-definite.
-                    const double h_prior = (sig2 - 1.0 + log_abs_b - mu_prior) / (sig2 * b * b);
-                    const double h_safe  = -1.0 / (sig2 * b * b);
-                    h_bb += std::min(h_prior, h_safe);
+                const double sig2 = sigma_prior * sigma_prior;
+                if (prior_type == 1) {
+                    // Gaussian N(0, sigma^2) prior on beta
+                    g_b += -b / sig2;
+                    h_bb += -1.0 / sig2;
+                } else {
+                    // Lognormal(mu_prior, sigma_prior^2) prior on |beta| (backward compat)
+                    const double abs_b = std::abs(b);
+                    if (abs_b > 1e-10) {
+                        const double log_abs_b = std::log(abs_b);
+                        g_b += -(1.0 + (log_abs_b - mu_prior) / sig2) / b;
+                        const double h_prior = (sig2 - 1.0 + log_abs_b - mu_prior) / (sig2 * b * b);
+                        const double h_safe  = -1.0 / (sig2 * b * b);
+                        h_bb += std::min(h_prior, h_safe);
+                    }
                 }
             }
 
