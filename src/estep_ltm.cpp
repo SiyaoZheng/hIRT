@@ -2,6 +2,9 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 using namespace Rcpp;
 
@@ -20,6 +23,8 @@ static inline double softplus_(double x) {
 // a CSR (Compressed Sparse Row) representation of the response matrix.
 // Only observed (non-NA) entries contribute to the log-likelihood,
 // giving a speedup proportional to the fraction of missing data.
+//
+// OpenMP-parallelized across respondents (the main N loop).
 //
 // @param row_ptr  CSR row pointers (length N+1). row_ptr[i]..row_ptr[i+1]-1
 //                 index into col_idx/values for observation i.
@@ -74,9 +79,6 @@ List compute_estep_ltm_cpp(
     NumericVector theta_vap(N);
     double total_log_lik = 0.0;
 
-    // Temporary storage for log-posteriors (one per quadrature point)
-    std::vector<double> log_post(K);
-
     // Raw pointers for tight inner loops
     const int*    rp  = row_ptr.begin();
     const int*    ci  = col_idx.begin();
@@ -86,6 +88,11 @@ List compute_estep_ltm_cpp(
     const double* tls = theta_ls.begin();
     const double* fm  = fitted_mean.begin();
     const double* fv  = fitted_var.begin();
+    // Raw pointers into R output vectors (safe for parallel write to distinct i)
+    double* w_ptr     = REAL(w);
+    double* eap_ptr   = REAL(theta_eap);
+    double* vap_ptr   = REAL(theta_vap);
+    const int* fw_ptr = use_weights ? freq_weights.begin() : nullptr;
 
     // P2: Precompute J*K tables for u_jk = alpha[j] + beta[j] * theta_ls[k]
     // and softplus(u_jk), eliminating redundant computation in the inner loop.
@@ -100,55 +107,68 @@ List compute_estep_ltm_cpp(
         }
     }
 
-    for (int i = 0; i < N; i++) {
-        const int start = rp[i];
-        const int end   = rp[i + 1];
-        const double sd_i = std::sqrt(fv[i]);
-        const double log_sd_i = std::log(sd_i);
-        const double inv_var_i = 1.0 / fv[i];
+    #ifdef _OPENMP
+    #pragma omp parallel reduction(+:total_log_lik)
+    {
+        std::vector<double> log_post(K);
 
-        // Compute log-posterior for each quadrature point
-        for (int k = 0; k < K; k++) {
-            const double theta_k = tls[k];
+        #pragma omp for schedule(dynamic, 512)
+        for (int i = 0; i < N; i++) {
+    #else
+    {
+        std::vector<double> log_post(K);
+        for (int i = 0; i < N; i++) {
+    #endif
+            const int start = rp[i];
+            const int end   = rp[i + 1];
+            const double sd_i = std::sqrt(fv[i]);
+            const double log_sd_i = std::log(sd_i);
+            const double inv_var_i = 1.0 / fv[i];
 
-            // Log-likelihood: sum over observed entries only (table lookup)
-            double loglik = 0.0;
-            for (int idx = start; idx < end; idx++) {
-                const int jk = ci[idx] * K + k;
-                loglik += val[idx] * util_table[jk] - sp_table[jk];
+            // Compute log-posterior for each quadrature point
+            for (int k = 0; k < K; k++) {
+                const double theta_k = tls[k];
+
+                // Log-likelihood: sum over observed entries only (table lookup)
+                double loglik = 0.0;
+                for (int idx = start; idx < end; idx++) {
+                    const int jk = ci[idx] * K + k;
+                    loglik += val[idx] * util_table[jk] - sp_table[jk];
+                }
+
+                // Log-prior: log N(theta_k; fitted_mean_i, sd_i)
+                const double z = theta_k - fm[i];
+                const double log_prior = neg_half_log_2pi - log_sd_i - 0.5 * z * z * inv_var_i;
+
+                log_post[k] = loglik + log_prior + log_qw[k];
             }
 
-            // Log-prior: log N(theta_k; fitted_mean_i, sd_i)
-            const double z = theta_k - fm[i];
-            const double log_prior = neg_half_log_2pi - log_sd_i - 0.5 * z * z * inv_var_i;
+            // Log-sum-exp normalization
+            double max_lp = log_post[0];
+            for (int k = 1; k < K; k++) {
+                if (log_post[k] > max_lp) max_lp = log_post[k];
+            }
+            double sum_exp = 0.0;
+            for (int k = 0; k < K; k++) {
+                sum_exp += std::exp(log_post[k] - max_lp);
+            }
+            const double log_norm = max_lp + std::log(sum_exp);
+            // Weight log-likelihood by pattern frequency if applicable
+            total_log_lik += use_weights ? fw_ptr[i] * log_norm : log_norm;
 
-            log_post[k] = loglik + log_prior + log_qw[k];
+            // Posterior weights, EAP, VAP
+            double eap  = 0.0;
+            double eap2 = 0.0;
+            for (int k = 0; k < K; k++) {
+                const double wki = std::exp(log_post[k] - log_norm);
+                // w is K x N column-major: w[k, i] = w_ptr[k + i*K]
+                w_ptr[k + i * K] = wki;
+                eap  += tls[k] * wki;
+                eap2 += tls[k] * tls[k] * wki;
+            }
+            eap_ptr[i] = eap;
+            vap_ptr[i] = eap2 - eap * eap;
         }
-
-        // Log-sum-exp normalization
-        double max_lp = log_post[0];
-        for (int k = 1; k < K; k++) {
-            if (log_post[k] > max_lp) max_lp = log_post[k];
-        }
-        double sum_exp = 0.0;
-        for (int k = 0; k < K; k++) {
-            sum_exp += std::exp(log_post[k] - max_lp);
-        }
-        const double log_norm = max_lp + std::log(sum_exp);
-        // Weight log-likelihood by pattern frequency if applicable
-        total_log_lik += use_weights ? freq_weights[i] * log_norm : log_norm;
-
-        // Posterior weights, EAP, VAP
-        double eap  = 0.0;
-        double eap2 = 0.0;
-        for (int k = 0; k < K; k++) {
-            const double wki = std::exp(log_post[k] - log_norm);
-            w(k, i) = wki;
-            eap  += tls[k] * wki;
-            eap2 += tls[k] * tls[k] * wki;
-        }
-        theta_eap[i] = eap;
-        theta_vap[i] = eap2 - eap * eap;
     }
 
     return List::create(
@@ -166,6 +186,9 @@ List compute_estep_ltm_cpp(
 // glm.fit (quasibinomial logit) with:
 //   Phase A  — sparse sufficient statistics (single pass over CSR data)
 //   Phase B  — batched 2×2 Newton-Raphson logistic regression per item
+//
+// OpenMP-parallelized: Phase A uses thread-local accumulators + merge.
+// Phase B parallelizes over items (each item is independent).
 //
 // @param row_ptr     CSR row pointers (length N+1).
 // @param col_idx     Column indices of observed entries (0-based).
@@ -212,6 +235,7 @@ List compute_mstep_ltm_cpp(
     const int*    ci  = col_idx.begin();
     const int*    val = values.begin();
     const double* tls = theta_ls.begin();
+    const double* w_ptr = REAL(w);
 
     // Phase A: Sparse sufficient statistics
     // suff_1[j*K + k] = sum_i w(k,i) * I(y_ij == 1) [* freq_weights[i]]
@@ -219,6 +243,44 @@ List compute_mstep_ltm_cpp(
     std::vector<double> suff_1(J * K, 0.0);
     std::vector<double> suff_0(J * K, 0.0);
 
+    #ifdef _OPENMP
+    #pragma omp parallel
+    {
+        // Thread-local accumulators
+        std::vector<double> suff_1_local(J * K, 0.0);
+        std::vector<double> suff_0_local(J * K, 0.0);
+
+        #pragma omp for schedule(dynamic, 512) nowait
+        for (int i = 0; i < N; i++) {
+            const int start = rp[i];
+            const int end   = rp[i + 1];
+            const double fw = use_weights ? (double)freq_weights[i] : 1.0;
+            for (int idx = start; idx < end; idx++) {
+                const int j = ci[idx];
+                const int y_ij = val[idx];
+                const int base = j * K;
+                if (y_ij == 1) {
+                    for (int k = 0; k < K; k++) {
+                        suff_1_local[base + k] += fw * w_ptr[k + i * K];
+                    }
+                } else {
+                    for (int k = 0; k < K; k++) {
+                        suff_0_local[base + k] += fw * w_ptr[k + i * K];
+                    }
+                }
+            }
+        }
+
+        // Merge thread-local into global
+        #pragma omp critical
+        {
+            for (int s = 0; s < J * K; s++) {
+                suff_1[s] += suff_1_local[s];
+                suff_0[s] += suff_0_local[s];
+            }
+        }
+    }
+    #else
     for (int i = 0; i < N; i++) {
         const int start = rp[i];
         const int end   = rp[i + 1];
@@ -229,20 +291,24 @@ List compute_mstep_ltm_cpp(
             const int base = j * K;
             if (y_ij == 1) {
                 for (int k = 0; k < K; k++) {
-                    suff_1[base + k] += fw * w(k, i);
+                    suff_1[base + k] += fw * w_ptr[k + i * K];
                 }
             } else {
                 for (int k = 0; k < K; k++) {
-                    suff_0[base + k] += fw * w(k, i);
+                    suff_0[base + k] += fw * w_ptr[k + i * K];
                 }
             }
         }
     }
+    #endif
 
     // Phase B: Newton-Raphson logistic regression per item
     NumericVector alpha_out(J);
     NumericVector beta_out(J);
 
+    #ifdef _OPENMP
+    #pragma omp parallel for schedule(dynamic)
+    #endif
     for (int j = 0; j < J; j++) {
         double a = alpha_init[j];
         double b = beta_init[j];

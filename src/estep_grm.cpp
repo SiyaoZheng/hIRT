@@ -2,6 +2,9 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 using namespace Rcpp;
 
@@ -21,6 +24,8 @@ static inline double sigmoid_(double x) {
 // Computes posterior quadrature weights, EAP and VAP estimates using
 // a CSR representation of the ordinal response matrix.
 // GRM log-likelihood: log[sigma(tau_upper + beta*theta) - sigma(tau_lower + beta*theta)]
+//
+// OpenMP-parallelized across respondents (the main N loop).
 //
 // @param row_ptr       CSR row pointers (length N+1).
 // @param col_idx       Column indices of observed entries (0-based item index).
@@ -82,6 +87,7 @@ List compute_estep_grm_cpp(
     const double* tls  = theta_ls.begin();
     const double* fm   = fitted_mean.begin();
     const double* fv   = fitted_var.begin();
+    const int* fw_ptr  = use_weights ? freq_weights.begin() : nullptr;
 
     // Precompute sigmoid table: sig_table[t * K + k] = sigma(alpha_flat[t] + beta[j] * theta_ls[k])
     // where t is the flat threshold index belonging to item j.
@@ -100,75 +106,91 @@ List compute_estep_grm_cpp(
     NumericVector theta_vap(N);
     double total_log_lik = 0.0;
 
-    std::vector<double> log_post(K);
+    // Raw pointers into R output vectors (safe for parallel write to distinct i)
+    double* w_ptr   = REAL(w);
+    double* eap_ptr = REAL(theta_eap);
+    double* vap_ptr = REAL(theta_vap);
 
-    for (int i = 0; i < N; i++) {
-        const int start = rp[i];
-        const int end   = rp[i + 1];
-        const double sd_i = std::sqrt(fv[i]);
-        const double log_sd_i = std::log(sd_i);
-        const double inv_var_i = 1.0 / fv[i];
+    #ifdef _OPENMP
+    #pragma omp parallel reduction(+:total_log_lik)
+    {
+        std::vector<double> log_post(K);
 
-        for (int k = 0; k < K; k++) {
-            // Log-likelihood: sum over observed items
-            double loglik = 0.0;
-            for (int idx = start; idx < end; idx++) {
-                const int j = ci[idx];
-                const int h = val[idx];       // 1-based category
-                const int H_j = Hv[j];
-                const int off_j = aoff[j];
+        #pragma omp for schedule(dynamic, 512)
+        for (int i = 0; i < N; i++) {
+    #else
+    {
+        std::vector<double> log_post(K);
+        for (int i = 0; i < N; i++) {
+    #endif
+            const int start = rp[i];
+            const int end   = rp[i + 1];
+            const double sd_i = std::sqrt(fv[i]);
+            const double log_sd_i = std::log(sd_i);
+            const double inv_var_i = 1.0 / fv[i];
 
-                // Upper CDF: sigma(tau_{h-1} + beta_j * theta_k)
-                double sig_upper;
-                if (h == 1) {
-                    sig_upper = 1.0;
-                } else {
-                    sig_upper = sig_table[(off_j + h - 2) * K + k];
+            for (int k = 0; k < K; k++) {
+                // Log-likelihood: sum over observed items
+                double loglik = 0.0;
+                for (int idx = start; idx < end; idx++) {
+                    const int j = ci[idx];
+                    const int h = val[idx];       // 1-based category
+                    const int H_j = Hv[j];
+                    const int off_j = aoff[j];
+
+                    // Upper CDF: sigma(tau_{h-1} + beta_j * theta_k)
+                    double sig_upper;
+                    if (h == 1) {
+                        sig_upper = 1.0;
+                    } else {
+                        sig_upper = sig_table[(off_j + h - 2) * K + k];
+                    }
+
+                    // Lower CDF: sigma(tau_h + beta_j * theta_k)
+                    double sig_lower;
+                    if (h == H_j) {
+                        sig_lower = 0.0;
+                    } else {
+                        sig_lower = sig_table[(off_j + h - 1) * K + k];
+                    }
+
+                    double diff = sig_upper - sig_lower;
+                    if (diff < 1e-20) diff = 1e-20;
+                    loglik += std::log(diff);
                 }
 
-                // Lower CDF: sigma(tau_h + beta_j * theta_k)
-                double sig_lower;
-                if (h == H_j) {
-                    sig_lower = 0.0;
-                } else {
-                    sig_lower = sig_table[(off_j + h - 1) * K + k];
-                }
+                // Log-prior: log N(theta_k; fitted_mean_i, sd_i)
+                const double z = tls[k] - fm[i];
+                const double log_prior = neg_half_log_2pi - log_sd_i - 0.5 * z * z * inv_var_i;
 
-                double diff = sig_upper - sig_lower;
-                if (diff < 1e-20) diff = 1e-20;
-                loglik += std::log(diff);
+                log_post[k] = loglik + log_prior + log_qw[k];
             }
 
-            // Log-prior: log N(theta_k; fitted_mean_i, sd_i)
-            const double z = tls[k] - fm[i];
-            const double log_prior = neg_half_log_2pi - log_sd_i - 0.5 * z * z * inv_var_i;
+            // Log-sum-exp normalization
+            double max_lp = log_post[0];
+            for (int k = 1; k < K; k++) {
+                if (log_post[k] > max_lp) max_lp = log_post[k];
+            }
+            double sum_exp = 0.0;
+            for (int k = 0; k < K; k++) {
+                sum_exp += std::exp(log_post[k] - max_lp);
+            }
+            const double log_norm = max_lp + std::log(sum_exp);
+            total_log_lik += use_weights ? fw_ptr[i] * log_norm : log_norm;
 
-            log_post[k] = loglik + log_prior + log_qw[k];
+            // Posterior weights, EAP, VAP
+            double eap  = 0.0;
+            double eap2 = 0.0;
+            for (int k = 0; k < K; k++) {
+                const double wki = std::exp(log_post[k] - log_norm);
+                // w is K x N column-major: w[k, i] = w_ptr[k + i*K]
+                w_ptr[k + i * K] = wki;
+                eap  += tls[k] * wki;
+                eap2 += tls[k] * tls[k] * wki;
+            }
+            eap_ptr[i] = eap;
+            vap_ptr[i] = eap2 - eap * eap;
         }
-
-        // Log-sum-exp normalization
-        double max_lp = log_post[0];
-        for (int k = 1; k < K; k++) {
-            if (log_post[k] > max_lp) max_lp = log_post[k];
-        }
-        double sum_exp = 0.0;
-        for (int k = 0; k < K; k++) {
-            sum_exp += std::exp(log_post[k] - max_lp);
-        }
-        const double log_norm = max_lp + std::log(sum_exp);
-        total_log_lik += use_weights ? freq_weights[i] * log_norm : log_norm;
-
-        // Posterior weights, EAP, VAP
-        double eap  = 0.0;
-        double eap2 = 0.0;
-        for (int k = 0; k < K; k++) {
-            const double wki = std::exp(log_post[k] - log_norm);
-            w(k, i) = wki;
-            eap  += tls[k] * wki;
-            eap2 += tls[k] * tls[k] * wki;
-        }
-        theta_eap[i] = eap;
-        theta_vap[i] = eap2 - eap * eap;
     }
 
     return List::create(
@@ -227,6 +249,9 @@ static bool solve_dense(double* A, double* b, int d) {
 //   Phase A: sparse sufficient statistics (single CSR pass)
 //   Phase B: per-item Newton-Raphson (Fisher scoring) for the cumulative logit model
 //
+// OpenMP-parallelized: Phase A uses thread-local accumulators + merge.
+// Phase B parallelizes over items (each item is independent).
+//
 // @param row_ptr          CSR row pointers (length N+1).
 // @param col_idx          Column indices (0-based).
 // @param values           Observed ordinal responses (1-based: 1..H_j).
@@ -279,6 +304,7 @@ List compute_mstep_grm_cpp(
     const double* tls = theta_ls.begin();
     const int*    aoff = alpha_offsets.begin();
     const int*    Hv   = H.begin();
+    const double* w_ptr = REAL(w);
 
     // Phase A: Sparse sufficient statistics
     // suff layout: for item j, suff[suff_offsets[j] + (h-1)*K + k]
@@ -291,6 +317,34 @@ List compute_mstep_grm_cpp(
     const int suff_total = suff_offsets[J];
     std::vector<double> suff(suff_total, 0.0);
 
+    #ifdef _OPENMP
+    #pragma omp parallel
+    {
+        // Thread-local accumulator
+        std::vector<double> suff_local(suff_total, 0.0);
+
+        #pragma omp for schedule(dynamic, 512) nowait
+        for (int i = 0; i < N; i++) {
+            const int start = rp[i];
+            const int end   = rp[i + 1];
+            const double fw = use_weights ? (double)freq_weights[i] : 1.0;
+            for (int idx = start; idx < end; idx++) {
+                const int j = ci[idx];
+                const int h = val[idx];  // 1-based
+                const int base = suff_offsets[j] + (h - 1) * K;
+                for (int k = 0; k < K; k++) {
+                    suff_local[base + k] += fw * w_ptr[k + i * K];
+                }
+            }
+        }
+
+        // Merge thread-local into global
+        #pragma omp critical
+        {
+            for (int s = 0; s < suff_total; s++) suff[s] += suff_local[s];
+        }
+    }
+    #else
     for (int i = 0; i < N; i++) {
         const int start = rp[i];
         const int end   = rp[i + 1];
@@ -300,10 +354,11 @@ List compute_mstep_grm_cpp(
             const int h = val[idx];  // 1-based
             const int base = suff_offsets[j] + (h - 1) * K;
             for (int k = 0; k < K; k++) {
-                suff[base + k] += fw * w(k, i);
+                suff[base + k] += fw * w_ptr[k + i * K];
             }
         }
     }
+    #endif
 
     // Phase B: Per-item Newton-Raphson
     const int n_alpha = alpha_flat_init.size();
@@ -314,168 +369,185 @@ List compute_mstep_grm_cpp(
     for (int t = 0; t < n_alpha; t++) alpha_flat_out[t] = alpha_flat_init[t];
     for (int j = 0; j < J; j++) beta_out[j] = beta_init[j];
 
-    // Max item dimension (for stack allocation)
+    // Max item dimension (for per-thread allocation)
     int max_d = 0;
     for (int j = 0; j < J; j++) {
         if (Hv[j] > max_d) max_d = Hv[j];
     }
-    // Working arrays (reused across items)
-    std::vector<double> cdf(max_d);       // CDF values (nthresh entries)
-    std::vector<double> f(max_d);         // sigmoid derivatives
-    std::vector<double> p(max_d + 1);     // category probabilities (1-indexed)
-    std::vector<double> grad(max_d + 1);  // gradient
-    std::vector<double> hess((max_d + 1) * (max_d + 1));  // Hessian (Fisher info, negated)
-    std::vector<double> delta(max_d + 1); // NR step
 
-    for (int j = 0; j < J; j++) {
-        const int H_j = Hv[j];
-        const int nthresh = H_j - 1;
-        const int d = H_j;  // nthresh + 1 (thresholds + beta)
-        const int off_j = aoff[j];
-        const int soff_j = suff_offsets[j];
+    #ifdef _OPENMP
+    #pragma omp parallel
+    {
+        // Thread-private working arrays
+        std::vector<double> cdf(max_d);
+        std::vector<double> f(max_d);
+        std::vector<double> p(max_d + 1);
+        std::vector<double> grad(max_d + 1);
+        std::vector<double> hess((max_d + 1) * (max_d + 1));
+        std::vector<double> delta(max_d + 1);
 
-        // Working parameters: tau[0..nthresh-1], beta_j
-        double* tau = alpha_flat_out.begin() + off_j;
-        double beta_j = beta_out[j];
+        #pragma omp for schedule(dynamic)
+        for (int j = 0; j < J; j++) {
+    #else
+    {
+        std::vector<double> cdf(max_d);
+        std::vector<double> f(max_d);
+        std::vector<double> p(max_d + 1);
+        std::vector<double> grad(max_d + 1);
+        std::vector<double> hess((max_d + 1) * (max_d + 1));
+        std::vector<double> delta(max_d + 1);
 
-        for (int nr_it = 0; nr_it < max_nr_iter; nr_it++) {
-            // Zero gradient and Hessian
-            std::fill(grad.begin(), grad.begin() + d, 0.0);
-            std::fill(hess.begin(), hess.begin() + d * d, 0.0);
+        for (int j = 0; j < J; j++) {
+    #endif
+            const int H_j = Hv[j];
+            const int nthresh = H_j - 1;
+            const int d = H_j;  // nthresh + 1 (thresholds + beta)
+            const int off_j = aoff[j];
+            const int soff_j = suff_offsets[j];
 
-            for (int k = 0; k < K; k++) {
-                const double theta_k = tls[k];
+            // Working parameters: tau[0..nthresh-1], beta_j
+            double* tau = alpha_flat_out.begin() + off_j;
+            double beta_j = beta_out[j];
 
-                // Compute CDFs and derivatives
-                for (int m = 0; m < nthresh; m++) {
-                    double u = tau[m] + beta_j * theta_k;
-                    cdf[m] = sigmoid_(u);
-                    f[m] = cdf[m] * (1.0 - cdf[m]);
-                }
+            for (int nr_it = 0; nr_it < max_nr_iter; nr_it++) {
+                // Zero gradient and Hessian
+                std::fill(grad.begin(), grad.begin() + d, 0.0);
+                std::fill(hess.begin(), hess.begin() + d * d, 0.0);
 
-                // Category probabilities (1-indexed: p[1]..p[H_j])
-                for (int h = 1; h <= H_j; h++) {
-                    double upper = (h == 1) ? 1.0 : cdf[h - 2];
-                    double lower = (h == H_j) ? 0.0 : cdf[h - 1];
-                    p[h] = std::max(upper - lower, 1e-20);
-                }
+                for (int k = 0; k < K; k++) {
+                    const double theta_k = tls[k];
 
-                // Total weight at this quadrature point
-                double N_k = 0.0;
-                for (int h = 1; h <= H_j; h++) {
-                    N_k += suff[soff_j + (h - 1) * K + k];
-                }
+                    // Compute CDFs and derivatives
+                    for (int m = 0; m < nthresh; m++) {
+                        double u = tau[m] + beta_j * theta_k;
+                        cdf[m] = sigmoid_(u);
+                        f[m] = cdf[m] * (1.0 - cdf[m]);
+                    }
 
-                // Accumulate gradient and Hessian over categories
-                for (int h = 1; h <= H_j; h++) {
-                    const double n_hk = suff[soff_j + (h - 1) * K + k];
-                    const double inv_p = 1.0 / p[h];
+                    // Category probabilities (1-indexed: p[1]..p[H_j])
+                    for (int h = 1; h <= H_j; h++) {
+                        double upper = (h == 1) ? 1.0 : cdf[h - 2];
+                        double lower = (h == H_j) ? 0.0 : cdf[h - 1];
+                        p[h] = std::max(upper - lower, 1e-20);
+                    }
 
-                    // Partial derivatives of P(h) w.r.t. parameters
-                    const bool has_upper = (h >= 2);
-                    const bool has_lower = (h <= H_j - 1);
-                    const int upper_m = h - 2;   // threshold index for upper CDF
-                    const int lower_m = h - 1;   // threshold index for lower CDF
+                    // Total weight at this quadrature point
+                    double N_k = 0.0;
+                    for (int h = 1; h <= H_j; h++) {
+                        N_k += suff[soff_j + (h - 1) * K + k];
+                    }
 
-                    const double d_upper = has_upper ? f[upper_m] : 0.0;
-                    const double d_lower = has_lower ? -f[lower_m] : 0.0;
-                    const double d_beta = theta_k * ((has_upper ? f[upper_m] : 0.0)
-                                                   - (has_lower ? f[lower_m] : 0.0));
+                    // Accumulate gradient and Hessian over categories
+                    for (int h = 1; h <= H_j; h++) {
+                        const double n_hk = suff[soff_j + (h - 1) * K + k];
+                        const double inv_p = 1.0 / p[h];
 
-                    // Gradient (observed)
-                    if (has_upper) grad[upper_m] += n_hk * d_upper * inv_p;
-                    if (has_lower) grad[lower_m] += n_hk * d_lower * inv_p;
-                    grad[nthresh] += n_hk * d_beta * inv_p;
+                        // Partial derivatives of P(h) w.r.t. parameters
+                        const bool has_upper = (h >= 2);
+                        const bool has_lower = (h <= H_j - 1);
+                        const int upper_m = h - 2;   // threshold index for upper CDF
+                        const int lower_m = h - 1;   // threshold index for lower CDF
 
-                    // Hessian: negative expected Fisher information
-                    // H[a,b] -= N_k * dp_a * dp_b / P(h)
-                    const double w_h = N_k * inv_p;
+                        const double d_upper = has_upper ? f[upper_m] : 0.0;
+                        const double d_lower = has_lower ? -f[lower_m] : 0.0;
+                        const double d_beta = theta_k * ((has_upper ? f[upper_m] : 0.0)
+                                                       - (has_lower ? f[lower_m] : 0.0));
 
-                    if (has_upper) {
-                        hess[upper_m * d + upper_m] -= w_h * d_upper * d_upper;
-                        if (has_lower) {
-                            double cross = w_h * d_upper * d_lower;
-                            hess[upper_m * d + lower_m] -= cross;
-                            hess[lower_m * d + upper_m] -= cross;
+                        // Gradient (observed)
+                        if (has_upper) grad[upper_m] += n_hk * d_upper * inv_p;
+                        if (has_lower) grad[lower_m] += n_hk * d_lower * inv_p;
+                        grad[nthresh] += n_hk * d_beta * inv_p;
+
+                        // Hessian: negative expected Fisher information
+                        // H[a,b] -= N_k * dp_a * dp_b / P(h)
+                        const double w_h = N_k * inv_p;
+
+                        if (has_upper) {
+                            hess[upper_m * d + upper_m] -= w_h * d_upper * d_upper;
+                            if (has_lower) {
+                                double cross = w_h * d_upper * d_lower;
+                                hess[upper_m * d + lower_m] -= cross;
+                                hess[lower_m * d + upper_m] -= cross;
+                            }
+                            double cross_b = w_h * d_upper * d_beta;
+                            hess[upper_m * d + nthresh] -= cross_b;
+                            hess[nthresh * d + upper_m] -= cross_b;
                         }
-                        double cross_b = w_h * d_upper * d_beta;
-                        hess[upper_m * d + nthresh] -= cross_b;
-                        hess[nthresh * d + upper_m] -= cross_b;
+                        if (has_lower) {
+                            hess[lower_m * d + lower_m] -= w_h * d_lower * d_lower;
+                            double cross_b = w_h * d_lower * d_beta;
+                            hess[lower_m * d + nthresh] -= cross_b;
+                            hess[nthresh * d + lower_m] -= cross_b;
+                        }
+                        hess[nthresh * d + nthresh] -= w_h * d_beta * d_beta;
                     }
-                    if (has_lower) {
-                        hess[lower_m * d + lower_m] -= w_h * d_lower * d_lower;
-                        double cross_b = w_h * d_lower * d_beta;
-                        hess[lower_m * d + nthresh] -= cross_b;
-                        hess[nthresh * d + lower_m] -= cross_b;
-                    }
-                    hess[nthresh * d + nthresh] -= w_h * d_beta * d_beta;
-                }
-            } // end quad point loop
+                } // end quad point loop
 
-            // Prior on beta
-            if (sigma_prior < 1e30) {
-                const double sig2 = sigma_prior * sigma_prior;
-                if (prior_type == 1) {
-                    // Gaussian N(0, sigma^2)
-                    grad[nthresh] += -beta_j / sig2;
-                    hess[nthresh * d + nthresh] += -1.0 / sig2;
-                } else {
-                    // Lognormal(mu_prior, sigma_prior^2) on |beta|
-                    const double abs_b = std::abs(beta_j);
-                    if (abs_b > 1e-10) {
-                        const double log_abs_b = std::log(abs_b);
-                        grad[nthresh] += -(1.0 + (log_abs_b - mu_prior) / sig2) / beta_j;
-                        const double h_prior = (sig2 - 1.0 + log_abs_b - mu_prior) / (sig2 * beta_j * beta_j);
-                        const double h_safe  = -1.0 / (sig2 * beta_j * beta_j);
-                        hess[nthresh * d + nthresh] += std::min(h_prior, h_safe);
+                // Prior on beta
+                if (sigma_prior < 1e30) {
+                    const double sig2 = sigma_prior * sigma_prior;
+                    if (prior_type == 1) {
+                        // Gaussian N(0, sigma^2)
+                        grad[nthresh] += -beta_j / sig2;
+                        hess[nthresh * d + nthresh] += -1.0 / sig2;
+                    } else {
+                        // Lognormal(mu_prior, sigma_prior^2) on |beta|
+                        const double abs_b = std::abs(beta_j);
+                        if (abs_b > 1e-10) {
+                            const double log_abs_b = std::log(abs_b);
+                            grad[nthresh] += -(1.0 + (log_abs_b - mu_prior) / sig2) / beta_j;
+                            const double h_prior = (sig2 - 1.0 + log_abs_b - mu_prior) / (sig2 * beta_j * beta_j);
+                            const double h_safe  = -1.0 / (sig2 * beta_j * beta_j);
+                            hess[nthresh * d + nthresh] += std::min(h_prior, h_safe);
+                        }
                     }
                 }
-            }
 
-            // Solve Hessian * delta = gradient
-            // Copy hess and grad into working arrays (solve_dense modifies in-place)
-            std::vector<double> hess_work(hess.begin(), hess.begin() + d * d);
-            for (int m = 0; m < d; m++) delta[m] = grad[m];
+                // Solve Hessian * delta = gradient
+                // Copy hess and grad into working arrays (solve_dense modifies in-place)
+                std::vector<double> hess_work(hess.begin(), hess.begin() + d * d);
+                for (int m = 0; m < d; m++) delta[m] = grad[m];
 
-            if (!solve_dense(hess_work.data(), delta.data(), d)) {
-                break;  // Singular Hessian, keep current params
-            }
-
-            // Cap step size
-            const double max_step = 1.0;
-            for (int m = 0; m < d; m++) {
-                if (std::abs(delta[m]) > max_step) {
-                    delta[m] = std::copysign(max_step, delta[m]);
+                if (!solve_dense(hess_work.data(), delta.data(), d)) {
+                    break;  // Singular Hessian, keep current params
                 }
-            }
 
-            // Update: theta -= delta (NR with negative definite Hessian)
-            for (int m = 0; m < nthresh; m++) {
-                tau[m] -= delta[m];
-            }
-            beta_j -= delta[nthresh];
-
-            // Enforce threshold ordering: tau[0] > tau[1] > ... > tau[nthresh-1]
-            for (int m = 0; m < nthresh - 1; m++) {
-                if (tau[m] <= tau[m + 1] + 1e-4) {
-                    double avg = 0.5 * (tau[m] + tau[m + 1]);
-                    tau[m]     = avg + 5e-5;
-                    tau[m + 1] = avg - 5e-5;
+                // Cap step size
+                const double max_step = 1.0;
+                for (int m = 0; m < d; m++) {
+                    if (std::abs(delta[m]) > max_step) {
+                        delta[m] = std::copysign(max_step, delta[m]);
+                    }
                 }
-            }
 
-            // Check convergence
-            double max_delta = 0.0;
-            for (int m = 0; m < d; m++) {
-                double ad = std::abs(delta[m]);
-                if (ad > max_delta) max_delta = ad;
-            }
-            if (max_delta < nr_tol) break;
+                // Update: theta -= delta (NR with negative definite Hessian)
+                for (int m = 0; m < nthresh; m++) {
+                    tau[m] -= delta[m];
+                }
+                beta_j -= delta[nthresh];
 
-        } // end NR loop
+                // Enforce threshold ordering: tau[0] > tau[1] > ... > tau[nthresh-1]
+                for (int m = 0; m < nthresh - 1; m++) {
+                    if (tau[m] <= tau[m + 1] + 1e-4) {
+                        double avg = 0.5 * (tau[m] + tau[m + 1]);
+                        tau[m]     = avg + 5e-5;
+                        tau[m + 1] = avg - 5e-5;
+                    }
+                }
 
-        beta_out[j] = beta_j;
-    } // end item loop
+                // Check convergence
+                double max_delta = 0.0;
+                for (int m = 0; m < d; m++) {
+                    double ad = std::abs(delta[m]);
+                    if (ad > max_delta) max_delta = ad;
+                }
+                if (max_delta < nr_tol) break;
+
+            } // end NR loop
+
+            beta_out[j] = beta_j;
+        } // end item loop
+    }
 
     return List::create(
         Named("alpha_flat") = alpha_flat_out,
