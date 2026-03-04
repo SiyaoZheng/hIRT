@@ -4,6 +4,7 @@
 \alias{coef_item}
 \alias{coef_mean}
 \alias{coef_var}
+\alias{coef_corr}
 \title{Parameter Estimates from Hierarchical IRT Models.}
 \usage{
 coef_item(x, by_item = TRUE, digits = 3)
@@ -11,6 +12,8 @@ coef_item(x, by_item = TRUE, digits = 3)
 coef_mean(x, digits = 3)
 
 coef_var(x, digits = 3)
+
+coef_corr(x, digits = 3)
 }
 \arguments{
 \item{x}{An object of class \code{hIRT}}
@@ -26,9 +29,11 @@ Parameter estimates, standard errors, z values, and p values
   by_item = FALSE}).
 }
 \description{
-Parameter estimates from either \code{hltm} or \code{hgrm} or \code{hgrmDIF} models. \code{code_item}
-reports estimates of item parameters. \code{coef_mean} reports results for the mean equation.
+Parameter estimates from either \code{hltm}, \code{hgrm}, \code{hgrmDIF}, or
+\code{mhltm} models. \code{coef_item} reports estimates of item parameters.
+\code{coef_mean} reports results for the mean equation.
 \code{coef_var} reports results for the variance equation.
+\code{coef_corr} reports the estimated correlation matrix (mhltm only).
 }
 \examples{
 y <- nes_econ2008[, -(1:3)]

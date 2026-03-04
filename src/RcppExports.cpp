@@ -101,6 +101,31 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// compute_inference_grm_cpp
+Rcpp::List compute_inference_grm_cpp(Rcpp::IntegerVector row_ptr, Rcpp::IntegerVector col_idx, Rcpp::IntegerVector values, Rcpp::NumericVector alpha_flat, Rcpp::IntegerVector alpha_offsets, Rcpp::IntegerVector H, Rcpp::NumericVector beta, Rcpp::NumericVector theta_ls, Rcpp::NumericVector qw_ls, Rcpp::NumericVector fitted_mean, Rcpp::NumericVector fitted_var, Rcpp::NumericMatrix x_mat, Rcpp::NumericMatrix z_mat, bool compute_item_se, bool verbose);
+RcppExport SEXP _hIRT_compute_inference_grm_cpp(SEXP row_ptrSEXP, SEXP col_idxSEXP, SEXP valuesSEXP, SEXP alpha_flatSEXP, SEXP alpha_offsetsSEXP, SEXP HSEXP, SEXP betaSEXP, SEXP theta_lsSEXP, SEXP qw_lsSEXP, SEXP fitted_meanSEXP, SEXP fitted_varSEXP, SEXP x_matSEXP, SEXP z_matSEXP, SEXP compute_item_seSEXP, SEXP verboseSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type row_ptr(row_ptrSEXP);
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type col_idx(col_idxSEXP);
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type values(valuesSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type alpha_flat(alpha_flatSEXP);
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type alpha_offsets(alpha_offsetsSEXP);
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type H(HSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type theta_ls(theta_lsSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type qw_ls(qw_lsSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type fitted_mean(fitted_meanSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type fitted_var(fitted_varSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type x_mat(x_matSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type z_mat(z_matSEXP);
+    Rcpp::traits::input_parameter< bool >::type compute_item_se(compute_item_seSEXP);
+    Rcpp::traits::input_parameter< bool >::type verbose(verboseSEXP);
+    rcpp_result_gen = Rcpp::wrap(compute_inference_grm_cpp(row_ptr, col_idx, values, alpha_flat, alpha_offsets, H, beta, theta_ls, qw_ls, fitted_mean, fitted_var, x_mat, z_mat, compute_item_se, verbose));
+    return rcpp_result_gen;
+END_RCPP
+}
 // compute_inference_ltm_cpp
 Rcpp::List compute_inference_ltm_cpp(Rcpp::IntegerVector row_ptr, Rcpp::IntegerVector col_idx, Rcpp::IntegerVector values, Rcpp::NumericVector alpha, Rcpp::NumericVector beta, Rcpp::NumericVector theta_ls, Rcpp::NumericVector qw_ls, Rcpp::NumericVector fitted_mean, Rcpp::NumericVector fitted_var, Rcpp::NumericMatrix x_mat, Rcpp::NumericMatrix z_mat, Rcpp::IntegerMatrix y_mat, bool verbose, Rcpp::Nullable<Rcpp::IntegerVector> freq_weights_);
 RcppExport SEXP _hIRT_compute_inference_ltm_cpp(SEXP row_ptrSEXP, SEXP col_idxSEXP, SEXP valuesSEXP, SEXP alphaSEXP, SEXP betaSEXP, SEXP theta_lsSEXP, SEXP qw_lsSEXP, SEXP fitted_meanSEXP, SEXP fitted_varSEXP, SEXP x_matSEXP, SEXP z_matSEXP, SEXP y_matSEXP, SEXP verboseSEXP, SEXP freq_weights_SEXP) {
@@ -131,6 +156,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_hIRT_compute_mstep_grm_cpp", (DL_FUNC) &_hIRT_compute_mstep_grm_cpp, 15},
     {"_hIRT_compute_estep_ltm_cpp", (DL_FUNC) &_hIRT_compute_estep_ltm_cpp, 10},
     {"_hIRT_compute_mstep_ltm_cpp", (DL_FUNC) &_hIRT_compute_mstep_ltm_cpp, 13},
+    {"_hIRT_compute_inference_grm_cpp", (DL_FUNC) &_hIRT_compute_inference_grm_cpp, 15},
     {"_hIRT_compute_inference_ltm_cpp", (DL_FUNC) &_hIRT_compute_inference_ltm_cpp, 14},
     {NULL, NULL, 0}
 };

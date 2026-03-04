@@ -11,7 +11,7 @@ hltm(
   constr = c("latent_scale", "items"),
   beta_set = 1L,
   sign_set = TRUE,
-  init = c("tetrachoric", "glm", "naive", "irt"),
+  init = c("naive", "glm", "tetrachoric", "irt"),
   control = list(),
   compute_se = TRUE
 )

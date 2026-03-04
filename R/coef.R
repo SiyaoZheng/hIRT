@@ -1,8 +1,10 @@
 #' Parameter Estimates from Hierarchical IRT Models.
 #'
-#' Parameter estimates from either \code{hltm} or \code{hgrm} or \code{hgrmDIF} models. \code{code_item}
-#' reports estimates of item parameters. \code{coef_mean} reports results for the mean equation.
+#' Parameter estimates from either \code{hltm}, \code{hgrm}, \code{hgrmDIF}, or
+#' \code{mhltm} models. \code{coef_item} reports estimates of item parameters.
+#' \code{coef_mean} reports results for the mean equation.
 #' \code{coef_var} reports results for the variance equation.
+#' \code{coef_corr} reports the estimated correlation matrix (mhltm only).
 #'
 #' @inheritParams print.hIRT
 #' @param by_item Logical. Should item parameters be stored item by item
@@ -32,7 +34,7 @@ coef_item <- function(x, by_item = TRUE, digits = 3) {
       rownames(out[[i]]) <- vapply(tmp, function(x) x[length(x)], FUN.VALUE = character(1L))
       out[[i]] <- round(out[[i]], digits)
     }
-  } else if (inherits(x, "hltm")){
+  } else if (inherits(x, "mhltm") || inherits(x, "hltm")){
     J <- x[["J"]]
     xitem <- x[["coefficients"]][1:(2 * J), , drop = FALSE]
     if (by_item == FALSE)
@@ -53,7 +55,7 @@ coef_item <- function(x, by_item = TRUE, digits = 3) {
       rownames(out[[i]]) <- vapply(tmp, function(x) x[length(x)], FUN.VALUE = character(1L))
       out[[i]] <- round(out[[i]], digits)
     }
-  } else stop("Use only with 'hgrm' or 'hltm' or `hgrmDIF` objects.\n")
+  } else stop("Use only with 'hgrm', 'hltm', 'mhltm', or 'hgrmDIF' objects.\n")
 
   stats::setNames(out, names(x[["H"]]))
 }
@@ -67,13 +69,14 @@ coef_item <- function(x, by_item = TRUE, digits = 3) {
 coef_mean <- function(x, digits = 3) {
 
   # if (x[["p"]] < 2) return(NULL)
-  sH <- if (inherits(x, "hltm"))
+  sH <- if (inherits(x, "mhltm") || inherits(x, "hltm"))
     2 * x[["J"]] else if (inherits(x, "hgrm"))
       sum(x[["H"]]) else if (inherits(x, "hgrmDIF"))
         sum(vapply(x[["coef_item"]], length, integer(1L))) else{
-          stop("Use only with 'hgrm' or 'hltm' or `hgrmDIF` objects.\n")
+          stop("Use only with 'hgrm', 'hltm', 'mhltm', or 'hgrmDIF' objects.\n")
         }
-  gamma_indices <- (sH + 1):(sH + x[["p"]])
+  p_total <- if (inherits(x, "mhltm")) x[["p"]] * x[["D"]] else x[["p"]]
+  gamma_indices <- (sH + 1):(sH + p_total)
   round(x[["coefficients"]][gamma_indices, , drop = FALSE], digits = digits)
 }
 
@@ -86,12 +89,24 @@ coef_mean <- function(x, digits = 3) {
 coef_var <- function(x, digits = 3) {
 
   # if (x[["q"]] < 2) return(NULL)
-  sH <- if (inherits(x, "hltm"))
+  sH <- if (inherits(x, "mhltm") || inherits(x, "hltm"))
     2 * x[["J"]] else if (inherits(x, "hgrm"))
       sum(x[["H"]]) else if (inherits(x, "hgrmDIF"))
         sum(vapply(x[["coef_item"]], length, integer(1L))) else{
-          stop("Use only with 'hgrm' or 'hltm' or `hgrmDIF` objects.\n")
+          stop("Use only with 'hgrm', 'hltm', 'mhltm', or 'hgrmDIF' objects.\n")
         }
-  lambda_indices <- (sH + x[["p"]] + 1):(sH + x[["p"]] + x[["q"]])
+  p_total <- if (inherits(x, "mhltm")) x[["p"]] * x[["D"]] else x[["p"]]
+  q_total <- if (inherits(x, "mhltm")) x[["q"]] * x[["D"]] else x[["q"]]
+  lambda_indices <- (sH + p_total + 1):(sH + p_total + q_total)
   round(x[["coefficients"]][lambda_indices, , drop = FALSE], digits = digits)
+}
+
+#' @inheritParams print.hIRT
+#'
+#' @export
+#' @rdname coef_item
+coef_corr <- function(x, digits = 3) {
+  if (!inherits(x, "mhltm"))
+    stop("Use only with 'mhltm' objects.\n")
+  round(x[["R"]], digits)
 }

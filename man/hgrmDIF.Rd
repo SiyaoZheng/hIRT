@@ -14,7 +14,7 @@ hgrmDIF(
   constr = c("latent_scale"),
   beta_set = 1L,
   sign_set = TRUE,
-  init = c("glm", "naive", "irt"),
+  init = c("naive", "glm", "irt"),
   control = list()
 )
 }

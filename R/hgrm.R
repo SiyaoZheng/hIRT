@@ -448,65 +448,43 @@ hgrm <- function(y, x = NULL, z = NULL, constr = c("latent_scale", "items"),
   gamma <- setNames(as.double(gamma), paste("x", colnames(x), sep = ""))
   lambda <- setNames(as.double(lambda), paste("z", colnames(z), sep = ""))
 
-  # inference
-  pik <- matrix(unlist(Map(partial(dnorm, x = theta_ls), mean = fitted_mean, sd = sqrt(fitted_var))),
-                N, K, byrow = TRUE) * matrix(qw_ls, N, K, byrow = TRUE)
-  Lijk <- lapply(theta_ls, function(theta_k) exp(loglik_grm(alpha = alpha, beta = beta, rep(theta_k, N))))  # K-list
-  Lik <- vapply(Lijk, compose(exp, partial(rowSums, na.rm = TRUE), log), double(N))
-  Li <- rowSums(Lik * pik)
-
-  # log likelihood
-  log_Lik <- sum(log(Li))
-
   # Name structures
-  # Add threshold names to alpha list elements
-  for (jj in seq_along(alpha)) {
-    tmp <- alpha[[jj]]
-    nms <- c(paste0("y>=", seq(2, length(tmp) - 1)), "Dscrmn")
-    # Only name the interior thresholds + Dscrmn for naming consistency
-  }
-
-  names_ab <- unlist(lapply(names(alpha), function(x) {
-    tmp <- alpha[[x]]
-    paste(x, c(names(tmp)[-c(1L, length(tmp))], "Dscrmn"))
+  names_ab <- unlist(lapply(seq_along(alpha), function(jj) {
+    nm <- item_names[jj]
+    H_j <- H[jj]
+    paste(nm, c(paste0("y>=", seq(2, H_j)), "Dscrmn"))
   }))
-  # If thresholds aren't named, use y>=h format
-  if (is.null(names(alpha[[1]])) || all(is.na(names(alpha[[1]])))) {
-    names_ab <- unlist(lapply(seq_along(alpha), function(jj) {
-      nm <- item_names[jj]
-      H_j <- H[jj]
-      paste(nm, c(paste0("y>=", seq(2, H_j)), "Dscrmn"))
-    }))
-  }
-
   coef_names <- c(names_ab, names(gamma), names(lambda))
+  sH <- sum(H)
 
   if (compute_se) {
-    # outer product of gradients
-    environment(sj_ab_grm) <- environment(si_gamma) <- environment(si_lambda) <- environment()
-    s_ab <- unname(Reduce(rbind, lapply(1:J, sj_ab_grm)))
-    s_gamma <- vapply(1:N, si_gamma, double(p))
-    s_lambda <- vapply(1:N, si_lambda, double(q))
+    # C++ streaming OPG inference (replaces R pik/Lijk/sj_ab_grm/si_gamma/si_lambda)
+    inf <- compute_inference_grm_cpp(
+      sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+      alpha_flat_final, alpha_offsets, H_int, beta,
+      theta_ls, qw_ls, fitted_mean, fitted_var,
+      as.matrix(x), as.matrix(z),
+      compute_item_se = TRUE
+    )
+    log_Lik <- inf$log_Lik
+    if (inf$singular) {
+      warning("The information matrix is singular; SE calculation failed.")
+    }
 
-    # covariance matrix and standard errors
-    s_all <- rbind(s_ab[-c(1L, nrow(s_ab)), , drop = FALSE], s_gamma, s_lambda)
-    s_all[is.na(s_all)] <- 0
-    covmat <- tryCatch(solve(tcrossprod(s_all)),
-                       error = function(e) {warning("The information matrix is singular; SE calculation failed.");
-                         matrix(NA, nrow(s_all), nrow(s_all))})
-    se_all <- sqrt(diag(covmat))
-
-    # reorganize se_all
-    sH <- sum(H)
-    gamma_indices <- (sH - 1):(sH + p - 2)
-    lambda_indices <- (sH + p - 1):(sH + p + q - 2)
-    se_all <- c(NA, se_all[1:(sH-2)], NA, se_all[gamma_indices], se_all[lambda_indices])
+    # Map free SEs back to full parameter vector
+    # Free indices: full_idx 1..(sH-2) -> se_free[0..(sH-3)]
+    # Then gamma (p) and lambda (q)
+    se_free <- inf$se_free
+    se_all <- c(NA, se_free[1:(sH - 2)], NA, se_free[(sH - 1):(sH - 2 + p)], se_free[(sH - 2 + p + 1):(sH - 2 + p + q)])
     names(se_all) <- coef_names
 
+    # Covmat with row/col names
+    covmat <- inf$covmat
     free_coef_names <- coef_names[-c(1L, sH)]
     rownames(covmat) <- colnames(covmat) <- free_coef_names
   } else {
-    sH <- sum(H)
+    # Use final E-step log_lik
+    log_Lik <- final_es$log_lik
     free_coef_names <- coef_names[-c(1L, sH)]
     covmat <- matrix(NA_real_, length(free_coef_names), length(free_coef_names))
     rownames(covmat) <- colnames(covmat) <- free_coef_names

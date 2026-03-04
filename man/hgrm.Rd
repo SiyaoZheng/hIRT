@@ -11,7 +11,7 @@ hgrm(
   constr = c("latent_scale", "items"),
   beta_set = 1L,
   sign_set = TRUE,
-  init = c("glm", "irt"),
+  init = c("naive", "glm", "irt"),
   control = list(),
   compute_se = TRUE
 )

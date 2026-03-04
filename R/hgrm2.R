@@ -215,42 +215,32 @@ hgrm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
   gamma <- setNames(as.double(gamma), paste("x", colnames(x), sep = ""))
   lambda <- setNames(as.double(lambda), paste("z", colnames(z), sep = ""))
 
-  # inference
-  pik <- matrix(unlist(Map(partial(dnorm, x = theta_ls), mean = fitted_mean, sd = sqrt(fitted_var))),
-                N, K, byrow = TRUE) * matrix(qw_ls, N, K, byrow = TRUE)
-  Lijk <- lapply(theta_ls, function(theta_k) exp(loglik_grm(alpha = alpha, beta = beta, rep(theta_k, N))))  # K-list
-  Lik <- vapply(Lijk, compose(exp, partial(rowSums, na.rm = TRUE), log), double(N))
-  Li <- rowSums(Lik * pik)
+  # C++ streaming OPG inference (gamma/lambda only, no item SEs)
+  inf <- compute_inference_grm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    af_obj$alpha_flat, alpha_offsets, H_int, beta,
+    theta_ls, qw_ls, fitted_mean, fitted_var,
+    as.matrix(x), as.matrix(z),
+    compute_item_se = FALSE
+  )
+  log_Lik <- inf$log_Lik
+  if (inf$singular) {
+    warning("The information matrix is singular; SE calculation failed.")
+  }
 
-  # log likelihood
-  log_Lik <- sum(log(Li))
-
-  # outer product of gradients
-  environment(sj_ab_grm) <- environment(si_gamma) <- environment(si_lambda) <- environment()
-  # s_ab <- unname(Reduce(rbind, lapply(1:J, sj_ab_grm)))
-  s_gamma <- vapply(1:N, si_gamma, double(p))
-  s_lambda <- vapply(1:N, si_lambda, double(q))
-
-  # covariance matrix
-  s_all <- rbind(s_gamma, s_lambda)
-  s_all[is.na(s_all)] <- 0
-  covmat <- tryCatch(solve(tcrossprod(s_all)),
-                     error = function(e) {warning("The information matrix is singular; SE calculation failed.");
-                       matrix(NA, nrow(s_all), nrow(s_all))})
-
-  # reorganize se_all
-  sH <- sum(H)
-  gamma_indices <- (sH - 1):(sH + p - 2)
-  lambda_indices <- (sH + p - 1):(sH + p + q - 2)
-  se_all <- c(rep(0, sH), sqrt(diag(covmat)))
-
-  # name se_all and covmat
-  names_ab <- unlist(lapply(names(alpha), function(x) {
-    tmp <- alpha[[x]]
-    paste(x, c(paste0("y>=", seq(2, length(tmp)-1)), "Dscrmn"))
-  }))
-  names(se_all) <- c(names_ab, names(gamma), names(lambda))
+  # Covmat is (p+q) x (p+q), covering gamma and lambda
+  covmat <- inf$covmat
   rownames(covmat) <- colnames(covmat) <- c(names(gamma), names(lambda))
+
+  # SE: item params get 0 (fixed), gamma/lambda get sqrt(diag(covmat))
+  sH <- sum(H)
+  names_ab <- unlist(lapply(seq_along(alpha), function(jj) {
+    nm <- names(alpha)[jj]
+    H_j <- H[jj]
+    paste(nm, c(paste0("y>=", seq(2, H_j)), "Dscrmn"))
+  }))
+  se_all <- c(rep(0, sH), inf$se_free)
+  names(se_all) <- c(names_ab, names(gamma), names(lambda))
 
   # item coefficients
   coef_item <- Map(function(a, b) c(a[-c(1L, length(a))], Dscrmn = b), alpha, beta)

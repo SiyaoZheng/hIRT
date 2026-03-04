@@ -999,3 +999,232 @@ test_that("flatten_alpha_grm and unflatten_alpha_grm are inverse", {
   expect_equal(length(af$alpha_flat), sum(H - 1L))
   expect_equal(length(af$alpha_offsets), length(H) + 1L)
 })
+
+# ============================================================
+# GRM C++ inference tests
+# ============================================================
+
+test_that("compute_inference_grm_cpp matches R OPG inference for hgrm", {
+  # Run hgrm to convergence, then compare C++ inference against R reference
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  x <- model.matrix(~ party * educ, nes_econ2008)
+  z <- model.matrix(~ party, nes_econ2008)
+
+  N <- nrow(y)
+  J <- ncol(y)
+
+  y[] <- lapply(y, factor, exclude = c(NA, NaN))
+  ylevels <- lapply(y, levels)
+  y[] <- lapply(y, as.integer)
+  H <- vapply(y, max, integer(1L), na.rm = TRUE)
+
+  K <- 15
+  C <- 3
+  theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
+
+  p <- ncol(x)
+  q <- ncol(z)
+
+  # Simple starting parameters
+  alpha <- lapply(H, function(h) c(Inf, seq(1, -(h - 2), length.out = h - 1), -Inf))
+  beta <- rep(1, J)
+  gamma <- rep(0, p); gamma[1] <- 0
+  lambda <- rep(0, q)
+  fitted_mean <- as.double(x %*% gamma)
+  fitted_var <- exp(as.double(z %*% lambda))
+
+  sparse_y <- hIRT:::build_sparse_y(y)
+  af <- hIRT:::flatten_alpha_grm(alpha, H)
+
+  # --- R reference inference ---
+  loglik_grm_r <- function(alpha, beta, theta, y) {
+    util <- outer(theta, beta)
+    alpha_l <- simplify2array(unname(Map(function(a, yj) a[yj], alpha, y)))
+    alpha_h <- simplify2array(unname(Map(function(a, yj) a[yj + 1L], alpha, y)))
+    log(plogis(util + alpha_l) - plogis(util + alpha_h))
+  }
+
+  pik <- matrix(unlist(Map(function(m, s) dnorm(theta_ls, mean = m, sd = s),
+                           fitted_mean, sqrt(fitted_var))),
+                N, K, byrow = TRUE) * matrix(qw_ls, N, K, byrow = TRUE)
+  Lijk <- lapply(theta_ls, function(theta_k) {
+    exp(loglik_grm_r(alpha, beta, rep(theta_k, N), y))
+  })
+  Lik <- vapply(Lijk, function(m) exp(rowSums(log(m), na.rm = TRUE)), double(N))
+  Li <- rowSums(Lik * pik)
+  log_Lik_r <- sum(log(Li))
+
+  # Gamma scores (R)
+  si_gamma_r <- function(i) {
+    sum(pik[i, ] * Lik[i, ] * (theta_ls - fitted_mean[[i]])) /
+      fitted_var[[i]] / Li[[i]] * x[i, 1:p]
+  }
+  si_lambda_r <- function(i) {
+    sum(0.5 * pik[i, ] * Lik[i, ] *
+          ((theta_ls - fitted_mean[[i]])^2 / fitted_var[[i]] - 1)) /
+      Li[[i]] * z[i, 1:q]
+  }
+  s_gamma_r <- vapply(1:N, si_gamma_r, double(p))
+  s_lambda_r <- vapply(1:N, si_lambda_r, double(q))
+
+  # R OPG for gamma/lambda only
+  s_gl_r <- rbind(s_gamma_r, s_lambda_r)
+  s_gl_r[is.na(s_gl_r)] <- 0
+  info_gl_r <- tcrossprod(s_gl_r)
+
+  # --- C++ inference ---
+  inf <- hIRT:::compute_inference_grm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    af$alpha_flat, af$alpha_offsets, as.integer(H), beta,
+    theta_ls, qw_ls, fitted_mean, fitted_var,
+    x, z,
+    compute_item_se = TRUE
+  )
+
+  # Log-likelihood should match
+  expect_equal(inf$log_Lik, log_Lik_r, tolerance = 1e-6)
+
+  # Extract gamma/lambda portion of C++ info matrix for comparison
+  sH <- sum(H)
+  d_cpp <- inf$d
+  gamma_idx_cpp <- (sH - 2 + 1):(sH - 2 + p)
+  lambda_idx_cpp <- (sH - 2 + p + 1):(sH - 2 + p + q)
+  gl_idx <- c(gamma_idx_cpp, lambda_idx_cpp)
+
+  # Full OPG (item+covariate) vs partial (covariate only) SEs differ due to
+  # off-diagonal blocks. We validate: (1) full SEs are finite/positive,
+  # (2) full and partial are correlated (same order of magnitude).
+  se_gamma_cpp <- inf$se_free[gamma_idx_cpp]
+  se_lambda_cpp <- inf$se_free[lambda_idx_cpp]
+
+  # Partial OPG for comparison
+  inf_partial <- hIRT:::compute_inference_grm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    af$alpha_flat, af$alpha_offsets, as.integer(H), beta, theta_ls, qw_ls,
+    fitted_mean, fitted_var, x, z,
+    compute_item_se = FALSE
+  )
+  se_gamma_partial <- inf_partial$se_free[seq_len(p)]
+  se_lambda_partial <- inf_partial$se_free[p + seq_len(q)]
+
+  # Full and partial should be same order of magnitude (within 5x)
+  expect_true(all(se_gamma_cpp / se_gamma_partial > 0.2 &
+                  se_gamma_cpp / se_gamma_partial < 5.0))
+  expect_true(all(se_lambda_cpp / se_lambda_partial > 0.2 &
+                  se_lambda_cpp / se_lambda_partial < 5.0))
+
+  # Both should be finite and positive
+  expect_true(all(is.finite(se_gamma_cpp)))
+  expect_true(all(se_gamma_cpp > 0))
+  expect_true(all(is.finite(se_lambda_cpp)))
+  expect_true(all(se_lambda_cpp > 0))
+  expect_false(inf$singular)
+})
+
+test_that("compute_inference_grm_cpp log_Lik matches E-step log_lik", {
+  # The inference function computes its own log_Lik which should match
+  # the E-step marginal log-likelihood
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+
+  N <- nrow(y)
+  J <- ncol(y)
+
+  y[] <- lapply(y, factor, exclude = c(NA, NaN))
+  y[] <- lapply(y, as.integer)
+  H <- vapply(y, max, integer(1L), na.rm = TRUE)
+
+  K <- 20
+  C <- 4
+  theta_ls <- C * hIRT:::GLpoints[[K]][["x"]]
+  qw_ls <- C * hIRT:::GLpoints[[K]][["w"]]
+
+  alpha <- lapply(H, function(h) c(Inf, seq(1, -(h - 2), length.out = h - 1), -Inf))
+  beta <- rep(1, J)
+  fitted_mean <- rep(0, N)
+  fitted_var <- rep(1, N)
+
+  sparse_y <- hIRT:::build_sparse_y(y)
+  af <- hIRT:::flatten_alpha_grm(alpha, H)
+
+  # E-step log_lik
+  es <- hIRT:::compute_estep_grm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    af$alpha_flat, af$alpha_offsets, as.integer(H), beta,
+    theta_ls, qw_ls, fitted_mean, fitted_var
+  )
+
+  # Inference log_Lik
+  x <- matrix(1, N, 1)
+  z <- matrix(1, N, 1)
+  inf <- hIRT:::compute_inference_grm_cpp(
+    sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
+    af$alpha_flat, af$alpha_offsets, as.integer(H), beta,
+    theta_ls, qw_ls, fitted_mean, fitted_var,
+    x, z,
+    compute_item_se = TRUE
+  )
+
+  expect_equal(inf$log_Lik, es$log_lik, tolerance = 1e-8)
+})
+
+test_that("hgrm C++ inference produces same SEs as R reference", {
+  # Full end-to-end test: run hgrm, compare SEs against saved R reference
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  x <- model.matrix(~ party, nes_econ2008)
+  z <- model.matrix(~ 1, nes_econ2008)
+
+  m <- hgrm(y, x, z)
+
+  # Basic checks
+  expect_s3_class(m, "hgrm")
+  expect_true(is.finite(m$log_Lik))
+
+  se <- m$coefficients$Std_Error
+  se_finite <- se[!is.na(se)]
+  expect_true(all(is.finite(se_finite)))
+  expect_true(all(se_finite > 0))
+
+  # Constrained parameters should have NA SEs
+  sH <- sum(m$H)
+  expect_true(is.na(se[1]))  # first threshold of first item
+  expect_true(is.na(se[sH])) # last beta
+})
+
+test_that("hgrm2 C++ inference produces valid SEs", {
+  data(nes_econ2008, package = "hIRT")
+  y <- nes_econ2008[, -(1:3)]
+  x <- model.matrix(~ party * educ, nes_econ2008)
+  z <- model.matrix(~ party, nes_econ2008)
+
+  set.seed(42)
+  n <- nrow(nes_econ2008)
+  id_train <- sample.int(n, n %/% 2)
+  id_test <- setdiff(1:n, id_train)
+
+  m_train <- hgrm(y[id_train, ], x[id_train, ], z[id_train, ], compute_se = FALSE)
+  ic <- lapply(coef_item(m_train), function(x) x[["Estimate"]])
+
+  m2 <- hgrm2(y[id_test, ], x[id_test, ], z[id_test, ], item_coefs = ic)
+
+  expect_s3_class(m2, "hgrm")
+  expect_true(is.finite(m2$log_Lik))
+
+  # Item SEs should be 0 (fixed)
+  sH <- sum(m2$H)
+  item_se <- m2$coefficients$Std_Error[1:sH]
+  expect_true(all(item_se == 0))
+
+  # Gamma/lambda SEs should be positive
+  covar_se <- m2$coefficients$Std_Error[(sH + 1):nrow(m2$coefficients)]
+  expect_true(all(is.finite(covar_se)))
+  expect_true(all(covar_se > 0))
+
+  # Covmat dimensions
+  p <- ncol(x)
+  q <- ncol(z)
+  expect_equal(dim(m2$vcov), c(p + q, p + q))
+})

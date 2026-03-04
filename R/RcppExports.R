@@ -17,6 +17,10 @@ compute_mstep_ltm_cpp <- function(row_ptr, col_idx, values, w, theta_ls, alpha_i
     .Call(`_hIRT_compute_mstep_ltm_cpp`, row_ptr, col_idx, values, w, theta_ls, alpha_init, beta_init, max_nr_iter, nr_tol, mu_prior, sigma_prior, prior_type, freq_weights_)
 }
 
+compute_inference_grm_cpp <- function(row_ptr, col_idx, values, alpha_flat, alpha_offsets, H, beta, theta_ls, qw_ls, fitted_mean, fitted_var, x_mat, z_mat, compute_item_se = TRUE, verbose = FALSE) {
+    .Call(`_hIRT_compute_inference_grm_cpp`, row_ptr, col_idx, values, alpha_flat, alpha_offsets, H, beta, theta_ls, qw_ls, fitted_mean, fitted_var, x_mat, z_mat, compute_item_se, verbose)
+}
+
 compute_inference_ltm_cpp <- function(row_ptr, col_idx, values, alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var, x_mat, z_mat, y_mat, verbose = FALSE, freq_weights_ = NULL) {
     .Call(`_hIRT_compute_inference_ltm_cpp`, row_ptr, col_idx, values, alpha, beta, theta_ls, qw_ls, fitted_mean, fitted_var, x_mat, z_mat, y_mat, verbose, freq_weights_)
 }
