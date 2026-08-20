@@ -1,9 +1,9 @@
 Package: hIRT
 Type: Package
 Title: Hierarchical Item Response Theory Models
-Version: 0.6.0
+Version: 0.7.1
 Authors@R: c(
-  person("Siyao", "Zheng", email = "siyao.zheng@duke.edu",
+  person("Siyao", "Zheng", email = "zhengsy24@sjtu.edu.cn",
     role = c("aut", "cre")),
   person("Xiang", "Zhou", email = "xiang_zhou@fas.harvard.edu",
     role = c("aut")))

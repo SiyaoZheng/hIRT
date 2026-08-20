@@ -3,12 +3,14 @@
 #' \code{hgrm2} fits a hierarchical graded response model where the item parameters
 #'   are known and supplied by the user.
 #'
-#' @param y A data frame or matrix of item responses.
+#' @param y A data frame or matrix of item responses, or an object returned by
+#'   [prepare_hgrm2_outcome()].
 #' @param x An optional model matrix, including the intercept term, that predicts the
 #'   mean of the latent preference. If not supplied, only the intercept term is included.
 #' @param z An optional model matrix, including the intercept term, that predicts the
 #'   variance of the latent preference. If not supplied, only the intercept term is included.
-#' @param item_coefs A list of known item parameters. The parameters of item \eqn{j} are given
+#' @param item_coefs A list of known item parameters. Omit this argument when
+#'   `y` is a prepared `hgrm2_outcome`. The parameters of item \eqn{j} are given
 #'   by the \eqn{j}th element, which should be a vector of length \eqn{H_j}, containing
 #'   \eqn{H_j - 1} item difficulty parameters (in descending order) and one item discrimination
 #'   parameter.
@@ -77,39 +79,108 @@
 #'
 #' model_test <- hgrm2(y_test, x_test, z_test, item_coefs = item_coefs)
 
+#' Prepare an Ordinal Outcome for Repeated hgrm2 Fits
+#'
+#' Encodes an ordinal outcome and fixed item parameters once for repeated
+#' structural fits with different covariate matrices. The returned object is
+#' accepted directly as the `y` argument of [hgrm2()].
+#'
+#' @param y A data frame or matrix of ordinal item responses.
+#' @param item_coefs A list of known item parameters, as in [hgrm2()].
+#'
+#' @return An object of class `hgrm2_outcome`.
+#' @export
+prepare_hgrm2_outcome <- function(y, item_coefs) {
+  if (missing(y)) stop("`y` must be provided.")
+  if ((!is.data.frame(y) && !is.matrix(y)) || ncol(y) == 1L) {
+    stop("'y' must be either a data.frame or a matrix with at least two columns.")
+  }
+  if (is.matrix(y)) y <- as.data.frame(y)
+
+  n <- nrow(y)
+  j <- ncol(y)
+  y[] <- lapply(y, factor, exclude = c(NA, NaN))
+  ylevels <- lapply(y, levels)
+  y[] <- lapply(y, as.integer)
+  invalid <- match(TRUE, vapply(y, invalid_grm, logical(1L)))
+  if (!is.na(invalid)) {
+    stop(paste(names(y)[invalid], "does not have at least two valid responses"))
+  }
+  h <- vapply(y, max, integer(1L), na.rm = TRUE)
+
+  if (missing(item_coefs)) stop("`item_coefs` must be supplied.")
+  if (!is.list(item_coefs) || length(item_coefs) != j) {
+    stop("`item_coefs` must be a list of `ncol(y)` elements")
+  }
+  item_coefs_h <- vapply(item_coefs, length, integer(1L))
+  if (!isTRUE(all.equal(item_coefs_h, h))) {
+    stop("`item_coefs` do not match the number of response categories in `y`")
+  }
+
+  alpha <- lapply(item_coefs, function(value) {
+    c(Inf, value[-length(value)], -Inf)
+  })
+  beta <- vapply(item_coefs, function(value) {
+    value[[length(value)]]
+  }, double(1L))
+  y_imputed <- y
+  if (anyNA(y)) y_imputed[] <- lapply(y, impute)
+  sparse_y <- build_sparse_y(y)
+  alpha_flat <- flatten_alpha_grm(alpha, h)
+  theta_eap <- princomp(y_imputed, cor = TRUE)$scores[, 1L]
+  theta_eap <- (theta_eap - mean(theta_eap, na.rm = TRUE)) /
+    sd(theta_eap, na.rm = TRUE)
+
+  structure(
+    list(
+      schema_version = "hgrm2_outcome_v1",
+      n = n,
+      j = j,
+      h = h,
+      h_int = as.integer(h),
+      ylevels = ylevels,
+      alpha = alpha,
+      beta = beta,
+      sparse_y = sparse_y,
+      alpha_flat = alpha_flat$alpha_flat,
+      alpha_offsets = alpha_flat$alpha_offsets,
+      theta_eap = theta_eap,
+      item_coefs = item_coefs
+    ),
+    class = "hgrm2_outcome"
+  )
+}
+
 hgrm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
 
   # match call
   cl <- match.call()
 
-  # check y and convert y into data.frame if needed
-  if(missing(y)) stop("`y` must be provided.")
-  if ((!is.data.frame(y) && !is.matrix(y)) || ncol(y) == 1L)
-    stop("'y' must be either a data.frame or a matrix with at least two columns.")
-  if(is.matrix(y)) y <- as.data.frame(y)
-
-  # number of units and items
-  N <- nrow(y)
-  J <- ncol(y)
-
-  # convert each y_j into an integer vector
-  y[] <- lapply(y, factor, exclude = c(NA, NaN))
-  ylevels <- lapply(y, levels)
-  y[] <- lapply(y, as.integer)
-  if (!is.na(invalid <- match(TRUE, vapply(y, invalid_grm, logical(1L)))))
-    stop(paste(names(y)[invalid], "does not have at least two valid responses"))
-  H <- vapply(y, max, integer(1L), na.rm = TRUE)
-
-  # extract item parameters
-  if(missing(item_coefs))
-    stop("`item_coefs` must be supplied.")
-  if(!is.list(item_coefs) || length(item_coefs) != J)
-    stop("`item_coefs` must be a list of `ncol(y)` elements")
-  item_coefs_H <- vapply(item_coefs, length, integer(1L))
-  if(!all.equal(item_coefs_H, H))
-    stop("`item_coefs` do not match the number of response categories in `y`")
-  alpha <- lapply(item_coefs, function(x) c(Inf, x[-length(x)], -Inf))
-  beta <- vapply(item_coefs, function(x) x[[length(x)]], double(1L))
+  if (missing(y)) stop("`y` must be provided.")
+  prepared <- if (inherits(y, "hgrm2_outcome")) {
+    if (!missing(item_coefs)) {
+      stop("`item_coefs` must be omitted when `y` is an hgrm2_outcome object.")
+    }
+    y
+  } else {
+    if (missing(item_coefs)) stop("`item_coefs` must be supplied.")
+    prepare_hgrm2_outcome(y, item_coefs)
+  }
+  required <- c(
+    "schema_version", "n", "j", "h", "h_int", "ylevels", "alpha",
+    "beta", "sparse_y", "alpha_flat", "alpha_offsets", "theta_eap",
+    "item_coefs"
+  )
+  if (!identical(prepared$schema_version, "hgrm2_outcome_v1") ||
+      length(setdiff(required, names(prepared))) > 0L) {
+    stop("`y` is not a valid hgrm2_outcome object.")
+  }
+  N <- prepared$n
+  J <- prepared$j
+  H <- prepared$h
+  ylevels <- prepared$ylevels
+  alpha <- prepared$alpha
+  beta <- prepared$beta
 
   # check x and z (x and z should contain an intercept column)
   x <- x %||% as.matrix(rep(1, N))
@@ -134,25 +205,18 @@ hgrm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
   theta_ls <- con[["C"]] * GLpoints[[K]][["x"]]
   qw_ls <- con[["C"]] * GLpoints[[K]][["w"]]
 
-  # imputation
-  y_imp <- y
-  if(anyNA(y)) y_imp[] <- lapply(y, impute)
-
-  # Pre-compute sparse representation and flat alpha for C++
-  sparse_y <- build_sparse_y(y)
-  af_obj <- flatten_alpha_grm(alpha, H)
-  alpha_offsets <- af_obj$alpha_offsets
-  H_int <- as.integer(H)
-
-  # pca for initial values of theta_eap
-  theta_eap <- {
-    tmp <- princomp(y_imp, cor = TRUE)$scores[, 1]
-    (tmp - mean(tmp, na.rm = TRUE))/sd(tmp, na.rm = TRUE)
-  }
+  sparse_y <- prepared$sparse_y
+  alpha_flat <- prepared$alpha_flat
+  alpha_offsets <- prepared$alpha_offsets
+  H_int <- prepared$h_int
+  theta_eap <- prepared$theta_eap
 
   # initial values of gamma and lambda
-  lm_opr <- tcrossprod(solve(crossprod(x)), x)
-  gamma <- lm_opr %*% theta_eap
+  xtx_inverse <- solve(crossprod(x))
+  update_gamma <- function(theta) {
+    as.double(xtx_inverse %*% crossprod(x, theta))
+  }
+  gamma <- update_gamma(theta_eap)
   lambda <- rep(0, q)
   fitted_mean <- as.double(x %*% gamma)
   fitted_var <- rep(1, N)
@@ -169,7 +233,7 @@ hgrm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
     # E-step (C++)
     es <- compute_estep_grm_cpp(
         sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
-        af_obj$alpha_flat, alpha_offsets, H_int, beta, theta_ls, qw_ls,
+        alpha_flat, alpha_offsets, H_int, beta, theta_ls, qw_ls,
         fitted_mean, fitted_var
     )
     w <- es$w
@@ -177,7 +241,7 @@ hgrm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
     theta_vap <- es$theta_vap
 
     # variance regression
-    gamma <- lm_opr %*% theta_eap
+    gamma <- update_gamma(theta_eap)
     r2 <- (theta_eap - x %*% gamma)^2 + theta_vap
     if (ncol(z)==1) lambda <- log(mean(r2)) else{
       s2 <- glm.fit(x = z, y = r2, intercept = FALSE, family = Gamma(link = "log"))[["fitted.values"]]
@@ -218,7 +282,7 @@ hgrm2 <- function(y, x = NULL, z = NULL, item_coefs, control = list()) {
   # C++ streaming OPG inference (gamma/lambda only, no item SEs)
   inf <- compute_inference_grm_cpp(
     sparse_y$row_ptr, sparse_y$col_idx, sparse_y$values,
-    af_obj$alpha_flat, alpha_offsets, H_int, beta,
+    alpha_flat, alpha_offsets, H_int, beta,
     theta_ls, qw_ls, fitted_mean, fitted_var,
     as.matrix(x), as.matrix(z),
     compute_item_se = FALSE

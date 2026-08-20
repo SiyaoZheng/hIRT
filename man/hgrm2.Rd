@@ -7,7 +7,8 @@
 hgrm2(y, x = NULL, z = NULL, item_coefs, control = list())
 }
 \arguments{
-\item{y}{A data frame or matrix of item responses.}
+\item{y}{A data frame or matrix of item responses, or an object returned by
+\code{prepare_hgrm2_outcome()}.}
 
 \item{x}{An optional model matrix, including the intercept term, that predicts the
 mean of the latent preference. If not supplied, only the intercept term is included.}
@@ -15,7 +16,8 @@ mean of the latent preference. If not supplied, only the intercept term is inclu
 \item{z}{An optional model matrix, including the intercept term, that predicts the
 variance of the latent preference. If not supplied, only the intercept term is included.}
 
-\item{item_coefs}{A list of known item parameters. The parameters of item \eqn{j} are given
+\item{item_coefs}{A list of known item parameters. Omit this argument when
+\code{y} is a prepared \code{hgrm2_outcome}. The parameters of item \eqn{j} are given
 by the \eqn{j}th element, which should be a vector of length \eqn{H_j}, containing
 \eqn{H_j - 1} item difficulty parameters (in descending order) and one item discrimination
 parameter.}
